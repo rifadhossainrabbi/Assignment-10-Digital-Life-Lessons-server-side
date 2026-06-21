@@ -25,7 +25,119 @@ async function run() {
     const lessonsCollection = database.collection('lessons');
     const favoritesCollection = database.collection('favorites');
 
-    // --- ফেভারিট লিস্ট পাওয়ার রাউট (GET /favorites/:userId) ---
+    // Get lessons route
+    app.get('/lessons', async (req, res) => {
+      const lessons = await lessonsCollection
+        .find({ visibility: 'Public' })
+        .sort({ createdAt: -1 })
+        .toArray();
+      res.json(lessons.map(l => ({ ...l, likesCount: l.likes?.length || 0 })));
+    });
+
+    // Get lessons created by a specific user 
+    app.get('/lessons/user/:userId', async (req, res) => {
+      try {
+        const { userId } = req.params;
+        const lessons = await lessonsCollection
+          .find({ 'author.userId': userId })
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        res.json(lessons); // Directly sending the DB data
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    // post lesson route
+    app.post('/lessons', async (req, res) => {
+      const lesson = req.body;
+      const result = await lessonsCollection.insertOne({
+        ...lesson,
+        likes: [],
+        likesCount: 0,
+        favoritesCount: 0,
+        createdAt: new Date(),
+      });
+      res.status(201).json(result);
+    });
+
+    // Get lesson details with Author stats and User interactions
+    app.get('/lessons/:id', async (req, res) => {
+      try {
+        // params
+        const { id } = req.params;
+        // query
+        const userId = req.query.userId;
+
+        const lesson = await lessonsCollection.findOne({
+          _id: new ObjectId(id),
+        });
+        if (!lesson)
+          return res.status(404).json({ message: 'Lesson not found' });
+
+        // author all lessons
+        const authorId = lesson.author?.userId;
+        const authorLessonsCount = await lessonsCollection.countDocuments({
+          'author.userId': authorId,
+        });
+
+        // currnet user like lesson data hunting
+        let hasLiked = false;
+        let hasFavorited = false;
+
+        if (userId) {
+          hasLiked = lesson.likes?.includes(userId) || false;
+          const fav = await favoritesCollection.findOne({
+            lessonId: id,
+            userId: userId,
+          });
+          hasFavorited = !!fav;
+        }
+
+        // lesson detail, author all lesson count, like count, favorites count sent
+        res.json({
+          ...lesson,
+          author: {
+            ...lesson.author,
+            lessonsCount: authorLessonsCount,
+          },
+          hasLiked,
+          hasFavorited,
+          likesCount: lesson.likes?.length || 0,
+        });
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    // like count detail route
+    app.post('/lessons/:id/like', async (req, res) => {
+      const lessonId = req.params.id;
+      const { userId } = req.body;
+      const lesson = await lessonsCollection.findOne({
+        _id: new ObjectId(lessonId),
+      });
+      const hasLiked = lesson.likes?.includes(userId);
+      if (hasLiked) {
+        await lessonsCollection.updateOne(
+          { _id: new ObjectId(lessonId) },
+          // pull = array theke data delete, inc= increement data er count er update
+          // https://www.mongodb.com/docs/manual/reference/mql/update/?utm_source=chatgpt.com
+          { $pull: { likes: userId }, $inc: { likesCount: -1 } },
+        );
+        res.json({ liked: false, message: 'Unliked' });
+      } else {
+        await lessonsCollection.updateOne(
+          { _id: new ObjectId(lessonId) },
+          // addToSet = array te notun data add
+          { $addToSet: { likes: userId }, $inc: { likesCount: 1 } },
+        );
+        res.json({ liked: true, message: 'Liked' });
+      }
+    });
+
+    // favorites lesson detail by userId
     app.get('/favorites/:userId', async (req, res) => {
       try {
         const { userId } = req.params;
@@ -60,49 +172,7 @@ async function run() {
       }
     });
 
-    // --- আগের রাউটগুলো (সংক্ষেপে) ---
-    app.post('/lessons', async (req, res) => {
-      const lesson = req.body;
-      const result = await lessonsCollection.insertOne({
-        ...lesson,
-        likes: [],
-        likesCount: 0,
-        favoritesCount: 0,
-        createdAt: new Date(),
-      });
-      res.status(201).json(result);
-    });
-
-    app.get('/lessons', async (req, res) => {
-      const lessons = await lessonsCollection
-        .find({ visibility: 'Public' })
-        .sort({ createdAt: -1 })
-        .toArray();
-      res.json(lessons.map(l => ({ ...l, likesCount: l.likes?.length || 0 })));
-    });
-
-    app.post('/lessons/:id/like', async (req, res) => {
-      const lessonId = req.params.id;
-      const { userId } = req.body;
-      const lesson = await lessonsCollection.findOne({
-        _id: new ObjectId(lessonId),
-      });
-      const hasLiked = lesson.likes?.includes(userId);
-      if (hasLiked) {
-        await lessonsCollection.updateOne(
-          { _id: new ObjectId(lessonId) },
-          { $pull: { likes: userId }, $inc: { likesCount: -1 } },
-        );
-        res.json({ liked: false, message: 'Unliked' });
-      } else {
-        await lessonsCollection.updateOne(
-          { _id: new ObjectId(lessonId) },
-          { $addToSet: { likes: userId }, $inc: { likesCount: 1 } },
-        );
-        res.json({ liked: true, message: 'Liked' });
-      }
-    });
-
+    // favorites lesson detail route
     app.post('/lessons/:id/favorite', async (req, res) => {
       const lessonId = req.params.id;
       const { userId } = req.body;
