@@ -24,6 +24,7 @@ async function run() {
     const database = client.db('digital_life_lessons_db');
     const lessonsCollection = database.collection('lessons');
     const favoritesCollection = database.collection('favorites');
+    const usersCollection = database.collection('user');
 
     // Get lessons route
     app.get('/lessons', async (req, res) => {
@@ -34,7 +35,7 @@ async function run() {
       res.json(lessons.map(l => ({ ...l, likesCount: l.likes?.length || 0 })));
     });
 
-    // Get lessons created by a specific user 
+    // Get lessons created by a specific user
     app.get('/lessons/user/:userId', async (req, res) => {
       try {
         const { userId } = req.params;
@@ -198,6 +199,67 @@ async function run() {
           { $inc: { favoritesCount: 1 } },
         );
         res.json({ favorited: true, message: 'Saved' });
+      }
+    });
+
+    /**
+     * Route: GET /admin/users
+     * Fetching users and their total lessons count
+     */
+    app.get('/admin/users', async (req, res) => {
+      try {
+        const users = await usersCollection.find().toArray();
+
+        // Mapping each user to count their specific lessons from the lessons collection
+        const usersWithStats = await Promise.all(
+          users.map(async user => {
+            const count = await lessonsCollection.countDocuments({
+              'author.userId': user._id.toString(),
+            });
+            return {
+              ...user,
+              totalLessons: count,
+            };
+          }),
+        );
+
+        res.send(usersWithStats);
+      } catch (error) {
+        res
+          .status(500)
+          .send({ message: 'Error fetching users', error: error.message });
+      }
+    });
+
+    /**
+     * Route: PATCH /admin/users/role/:id
+     * Update role from 'user' to 'admin'
+     */
+    app.patch('/admin/users/role/:id', async (req, res) => {
+      try {
+        const id = req.params.id;
+        const filter = { _id: new ObjectId(id) };
+        const updateDoc = { $set: { role: 'admin' } };
+        const result = await usersCollection.updateOne(filter, updateDoc);
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ message: 'Failed to update role' });
+      }
+    });
+
+    /**
+     * Route: DELETE /admin/users/:id
+     * Delete user account permanently
+     */
+    app.delete('/admin/users/:id', async (req, res) => {
+      try {
+        const id = req.params.id;
+        const result = await usersCollection.deleteOne({
+          _id: new ObjectId(id),
+        });
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ message: 'Failed to delete user' });
       }
     });
 
