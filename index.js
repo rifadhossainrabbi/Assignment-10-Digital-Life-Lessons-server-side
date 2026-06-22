@@ -26,13 +26,55 @@ async function run() {
     const favoritesCollection = database.collection('favorites');
     const usersCollection = database.collection('user');
 
-    // Get lessons route
+    // Get lessons route (only public visibility)
     app.get('/lessons', async (req, res) => {
       const lessons = await lessonsCollection
         .find({ visibility: 'Public' })
         .sort({ createdAt: -1 })
         .toArray();
       res.json(lessons.map(l => ({ ...l, likesCount: l.likes?.length || 0 })));
+    });
+
+    // --- Admin: Get ALL lessons (Public + Private) with Stats ---
+    app.get('/admin/all-lessons', async (req, res) => {
+      try {
+        const lessons = await lessonsCollection
+          .find()
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        // Calculate Stats for Admin Dashboard
+        const stats = {
+          total: lessons.length,
+          publicCount: lessons.filter(l => l.visibility === 'Public').length,
+          privateCount: lessons.filter(l => l.visibility === 'Private').length,
+          featuredCount: lessons.filter(l => l.isFeatured).length,
+        };
+
+        res.send({ lessons, stats });
+      } catch (error) {
+        res.status(500).send({ message: 'Error fetching lessons' });
+      }
+    });
+
+    // --- Admin: Update Featured/Reviewed status ---
+    app.patch('/admin/lessons/status/:id', async (req, res) => {
+      const id = req.params.id;
+      const updateData = req.body; // e.g., { isFeatured: true } or { isReviewed: true }
+      const result = await lessonsCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: updateData },
+      );
+      res.send(result);
+    });
+
+    // --- Admin: Delete any lesson ---
+    app.delete('/admin/lessons/:id', async (req, res) => {
+      const id = req.params.id;
+      const result = await lessonsCollection.deleteOne({
+        _id: new ObjectId(id),
+      });
+      res.send(result);
     });
 
     // Get lessons created by a specific user
@@ -260,6 +302,53 @@ async function run() {
         res.send(result);
       } catch (error) {
         res.status(500).send({ message: 'Failed to delete user' });
+      }
+    });
+
+    /**
+     * Route: PATCH /admin/profile/update/:id
+     * Purpose: Update Admin profile details (Name and Image)
+     * Access: Admin only (typically verified via middleware/session)
+     */
+    app.patch('/admin/profile/update/:id', async (req, res) => {
+      try {
+        const id = req.params.id;
+        const { name, image } = req.body; // Extract data from request body
+
+        // Create filter using MongoDB ObjectId
+        const filter = { _id: new ObjectId(id) };
+
+        // Define the update operation
+        const updateDoc = {
+          $set: {
+            name: name,
+            image: image, // Updates both image and photoURL fields if needed
+            photoURL: image,
+          },
+        };
+
+        // Execute the update in the 'user' collection
+        const result = await usersCollection.updateOne(filter, updateDoc);
+
+        if (result.modifiedCount > 0) {
+          res.status(200).send({
+            success: true,
+            message: 'Admin profile updated in the archive successfully',
+            result,
+          });
+        } else {
+          res.status(404).send({
+            success: false,
+            message: 'No changes made or user not found',
+          });
+        }
+      } catch (error) {
+        // Handle potential server or database errors
+        res.status(500).send({
+          success: false,
+          message: 'Failed to update admin profile registry',
+          error: error.message,
+        });
       }
     });
 
