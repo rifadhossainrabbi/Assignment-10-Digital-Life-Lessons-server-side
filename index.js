@@ -439,6 +439,27 @@ async function run() {
       res.send(lessonResult);
     });
 
+    // --- Get Featured Lessons for Home Page (Strictly Featured only) ---
+    app.get('/featured-lessons', async (req, res) => {
+      try {
+        // sudhu public r isFeatured true ase jei gulo oi data dibe
+        const query = {
+          isFeatured: true,
+          visibility: 'Public',
+        };
+
+        const featuredLessons = await lessonsCollection
+          .find(query)
+          .sort({ createdAt: -1 }) // latest gulo age
+          .limit(4) // shudhu 4 ta data pabe
+          .toArray();
+
+       res.send(featuredLessons);
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
     console.log('Archive Ecosystem Online!');
   } catch (err) {
     console.error(err);
