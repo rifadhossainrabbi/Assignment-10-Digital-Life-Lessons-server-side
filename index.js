@@ -25,6 +25,7 @@ async function run() {
     const lessonsCollection = database.collection('lessons');
     const favoritesCollection = database.collection('favorites');
     const usersCollection = database.collection('user');
+    const lessonReportCollection = database.collection('lessons_reports');
 
     // Get lessons route (only public visibility)
     app.get('/lessons', async (req, res) => {
@@ -350,6 +351,92 @@ async function run() {
           error: error.message,
         });
       }
+    });
+
+    // --- REPORTING SYSTEM ---
+
+    /**
+     * Route: POST /lessons/:id/report
+     * Purpose: Allows logged-in users to flag inappropriate content
+     */
+    app.post('/lessons/:id/report', async (req, res) => {
+      try {
+        const lessonId = req.params.id;
+        const { userId, userEmail, reason, additionalDetails, lessonTitle } =
+          req.body;
+
+        const reportEntry = {
+          lessonId,
+          lessonTitle,
+          reporterUserId: userId,
+          reportedUserEmail: userEmail,
+          reason,
+          additionalDetails, // Storing the textarea content
+          timestamp: new Date(),
+        };
+
+        const result = await lessonReportCollection.insertOne(reportEntry);
+        res.status(201).send({ success: true, result });
+      } catch (error) {
+        res.status(500).send({ message: 'Error' });
+      }
+    });
+
+    /**
+     * Route: GET /admin/reported-lessons
+     * Purpose: Aggregates reports so admin sees unique lessons and their report counts
+     */
+    app.get('/admin/reported-lessons', async (req, res) => {
+      try {
+        // Grouping by lessonId to show a summary in the admin table
+        const reportedLessons = await lessonReportCollection
+          .aggregate([
+            {
+              $group: {
+                _id: '$lessonId',
+                lessonTitle: { $first: '$lessonTitle' },
+                reportCount: { $sum: 1 },
+                allReports: { $push: '$$ROOT' }, // Keep details for the admin modal
+              },
+            },
+            { $sort: { reportCount: -1 } },
+          ])
+          .toArray();
+
+        res.send(reportedLessons);
+      } catch (error) {
+        res.status(500).send({ message: 'Error fetching reported content' });
+      }
+    });
+
+    /**
+     * Route: DELETE /admin/reports/ignore/:lessonId
+     * Purpose: Clears all reports for a specific lesson without deleting the lesson
+     */
+    app.delete('/admin/reports/ignore/:lessonId', async (req, res) => {
+      try {
+        const { lessonId } = req.params;
+        const result = await lessonReportCollection.deleteMany({ lessonId });
+        res.send({ success: true, message: 'Reports cleared', result });
+      } catch (error) {
+        res.status(500).send({ message: 'Action failed' });
+      }
+    });
+
+    /**
+     * Route: DELETE /admin/lessons/:id (Modified)
+     * Purpose: Deletes a lesson and also cleans up its associated reports
+     */
+    app.delete('/admin/lessons/:id', async (req, res) => {
+      const id = req.params.id;
+      // 1. Delete the lesson itself
+      const lessonResult = await lessonsCollection.deleteOne({
+        _id: new ObjectId(id),
+      });
+      // 2. Clean up associated reports from the reports collection
+      await lessonReportCollection.deleteMany({ lessonId: id });
+
+      res.send(lessonResult);
     });
 
     console.log('Archive Ecosystem Online!');
