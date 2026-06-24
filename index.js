@@ -155,6 +155,41 @@ async function run() {
       }
     });
 
+    // --- User: Update Lesson Settings (Visibility/AccessLevel) ---
+    app.patch('/lessons/:id', async (req, res) => {
+      try {
+        const id = req.params.id;
+        const { visibility, accessLevel } = req.body;
+        const updateDoc = {};
+        if (visibility) updateDoc.visibility = visibility;
+        if (accessLevel) updateDoc.accessLevel = accessLevel;
+
+        const result = await lessonsCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: updateDoc },
+        );
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ message: 'Update failed' });
+      }
+    });
+
+    // --- User/Admin: Delete any lesson & its reports ---
+    app.delete('/lessons/:id', async (req, res) => {
+      try {
+        const id = req.params.id;
+        // 1. Delete lesson
+        const result = await lessonsCollection.deleteOne({
+          _id: new ObjectId(id),
+        });
+        // 2. Clean up associated reports
+        await lessonReportCollection.deleteMany({ lessonId: id });
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ message: 'Delete failed' });
+      }
+    });
+
     // like count detail route
     app.post('/lessons/:id/like', async (req, res) => {
       const lessonId = req.params.id;
@@ -454,7 +489,7 @@ async function run() {
           .limit(4) // shudhu 4 ta data pabe
           .toArray();
 
-       res.send(featuredLessons);
+        res.send(featuredLessons);
       } catch (error) {
         res.status(500).json({ error: error.message });
       }
