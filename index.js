@@ -26,6 +26,7 @@ async function run() {
     const favoritesCollection = database.collection('favorites');
     const usersCollection = database.collection('user');
     const lessonReportCollection = database.collection('lessons_reports');
+    const commentsCollection = database.collection('comments');
 
     // Get lessons route (only public visibility)
     app.get('/lessons', async (req, res) => {
@@ -557,6 +558,83 @@ async function run() {
         res
           .status(500)
           .send({ message: 'Upgrade failed', error: error.message });
+      }
+    });
+
+    // 1. Route: POST /lessons/:id/comments
+    // Purpose: Save a new comment/reflection for a specific lesson
+    app.post('/lessons/:id/comments', async (req, res) => {
+      try {
+        const lessonId = req.params.id;
+        const { userId, userName, text } = req.body;
+
+        const newComment = {
+          lessonId,
+          userId,
+          userName,
+          text,
+          createdAt: new Date(), // Storing timestamp
+        };
+
+        const result = await commentsCollection.insertOne(newComment);
+
+        // Return the inserted object with its ID to the frontend
+        res.status(201).json({ _id: result.insertedId, ...newComment });
+      } catch (error) {
+        res.status(500).json({ message: 'Failed to save reflection' });
+      }
+    });
+
+    // 2. Modify existing GET /lessons/:id to include comments
+    // Update your existing app.get('/lessons/:id', ...) route as shown below:
+    app.get('/lessons/:id', async (req, res) => {
+      try {
+        const { id } = req.params;
+        const userId = req.query.userId;
+
+        const lesson = await lessonsCollection.findOne({
+          _id: new ObjectId(id),
+        });
+        if (!lesson)
+          return res.status(404).json({ message: 'Lesson not found' });
+
+        // --- FETCH COMMENTS FOR THIS LESSON ---
+        const comments = await commentsCollection
+          .find({ lessonId: id })
+          .sort({ createdAt: -1 }) // Show newest comments first
+          .toArray();
+
+        const authorId = lesson.author?.userId;
+        const authorLessonsCount = await lessonsCollection.countDocuments({
+          'author.userId': authorId,
+        });
+
+        let hasLiked = false;
+        let hasFavorited = false;
+
+        if (userId) {
+          hasLiked = lesson.likes?.includes(userId) || false;
+          const fav = await favoritesCollection.findOne({
+            lessonId: id,
+            userId: userId,
+          });
+          hasFavorited = !!fav;
+        }
+
+        // Include comments in the response object
+        res.json({
+          ...lesson,
+          comments, // Sending comments array to frontend
+          author: {
+            ...lesson.author,
+            lessonsCount: authorLessonsCount,
+          },
+          hasLiked,
+          hasFavorited,
+          likesCount: lesson.likes?.length || 0,
+        });
+      } catch (error) {
+        res.status(500).json({ error: error.message });
       }
     });
 
