@@ -638,6 +638,48 @@ async function run() {
       }
     });
 
+    // Get Top 4 Contributors
+    app.get('/top-contributors', async (req, res) => {
+      try {
+        const topUsers = await lessonsCollection
+          .aggregate([
+            {
+              $match: {
+                'author.userId': { $exists: true, $ne: null, $ne: '' },
+              },
+            },
+            { $sort: { favoritesCount: -1, createdAt: -1 } },
+            {
+              $group: {
+                _id: '$author.userId',
+                name: { $first: '$author.name' },
+                image: { $first: '$author.image' },
+                totalLessons: { $sum: 1 },
+                topLessonId: { $first: '$_id' },
+                topLessonTitle: { $first: '$title' },
+              },
+            },
+            { $sort: { totalLessons: -1 } },
+            { $limit: 4 },
+          ])
+          .toArray();
+
+        res.send(topUsers);
+      } catch (error) {
+        console.error('Aggregation Error:', error);
+        res.status(500).send({ message: 'Failed to fetch contributors' });
+      }
+    });
+    // --- Get Most Saved Lessons ---
+    app.get('/most-saved-lessons', async (req, res) => {
+      const topLessons = await lessonsCollection
+        .find({ visibility: 'Public' })
+        .sort({ favoritesCount: -1 })
+        .limit(4)
+        .toArray();
+      res.send(topLessons);
+    });
+
     console.log('Archive Ecosystem Online!');
   } catch (err) {
     console.error(err);
