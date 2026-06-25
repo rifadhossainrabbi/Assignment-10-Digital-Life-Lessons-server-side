@@ -174,22 +174,39 @@ async function run() {
       }
     });
 
-    // --- User: Update Lesson Settings (Visibility/AccessLevel) ---
+    // Route: PATCH /lessons/:id
+    // Purpose: Update specific fields of an existing lesson
     app.patch('/lessons/:id', async (req, res) => {
       try {
         const id = req.params.id;
-        const { visibility, accessLevel } = req.body;
+        // Extracting all potential update fields from body
+        const {
+          visibility,
+          accessLevel,
+          title,
+          description,
+          category,
+          emotionalTone,
+          image,
+        } = req.body;
+
         const updateDoc = {};
         if (visibility) updateDoc.visibility = visibility;
         if (accessLevel) updateDoc.accessLevel = accessLevel;
+        if (title) updateDoc.title = title;
+        if (description) updateDoc.description = description;
+        if (category) updateDoc.category = category;
+        if (emotionalTone) updateDoc.emotionalTone = emotionalTone;
+        if (image) updateDoc.image = image;
 
         const result = await lessonsCollection.updateOne(
           { _id: new ObjectId(id) },
           { $set: updateDoc },
         );
-        res.send(result);
+
+        res.status(200).send(result);
       } catch (error) {
-        res.status(500).send({ message: 'Update failed' });
+        res.status(500).send({ message: 'Update synchronization failed' });
       }
     });
 
@@ -531,12 +548,10 @@ async function run() {
         if (result.modifiedCount > 0) {
           res.send({ success: true, message: 'Plan upgraded to premium' });
         } else {
-          res
-            .status(404)
-            .send({
-              success: false,
-              message: 'User not found or already premium',
-            });
+          res.status(404).send({
+            success: false,
+            message: 'User not found or already premium',
+          });
         }
       } catch (error) {
         res
