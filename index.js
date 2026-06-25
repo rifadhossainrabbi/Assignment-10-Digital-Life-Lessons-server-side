@@ -96,6 +96,25 @@ async function run() {
     // post lesson route
     app.post('/lessons', async (req, res) => {
       const lesson = req.body;
+      const userId = lesson.author?.userId;
+
+      // check user plan
+      const user = await usersCollection.findOne({ _id: new ObjectId(userId) });
+
+      // plan free hole koyta lesson ase ta dekhbe
+      if (user?.plan === 'free') {
+        const count = await lessonsCollection.countDocuments({
+          'author.userId': userId,
+        });
+        if (count >= 5) {
+          return res.status(403).json({
+            message:
+              'Free limit reached! Upgrade to Premium for unlimited publishing.',
+          });
+        }
+        lesson.accessLevel = 'Free';
+      }
+
       const result = await lessonsCollection.insertOne({
         ...lesson,
         likes: [],
@@ -492,6 +511,37 @@ async function run() {
         res.send(featuredLessons);
       } catch (error) {
         res.status(500).json({ error: error.message });
+      }
+    });
+
+    /**
+     * Route: PATCH /users/plan-update route by user email
+     */
+    app.patch('/users/plan-update', async (req, res) => {
+      try {
+        const { email } = req.body;
+        if (!email)
+          return res.status(400).send({ message: 'Email is required' });
+
+        const result = await usersCollection.updateOne(
+          { email: email },
+          { $set: { plan: 'premium' } },
+        );
+
+        if (result.modifiedCount > 0) {
+          res.send({ success: true, message: 'Plan upgraded to premium' });
+        } else {
+          res
+            .status(404)
+            .send({
+              success: false,
+              message: 'User not found or already premium',
+            });
+        }
+      } catch (error) {
+        res
+          .status(500)
+          .send({ message: 'Upgrade failed', error: error.message });
       }
     });
 
