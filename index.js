@@ -127,53 +127,53 @@ async function run() {
     });
 
     // Get lesson details with Author stats and User interactions
-    app.get('/lessons/:id', async (req, res) => {
-      try {
-        // params
-        const { id } = req.params;
-        // query
-        const userId = req.query.userId;
+    // app.get('/lessons/:id', async (req, res) => {
+    //   try {
+    //     // params
+    //     const { id } = req.params;
+    //     // query
+    //     const userId = req.query.userId;
 
-        const lesson = await lessonsCollection.findOne({
-          _id: new ObjectId(id),
-        });
-        if (!lesson)
-          return res.status(404).json({ message: 'Lesson not found' });
+    //     const lesson = await lessonsCollection.findOne({
+    //       _id: new ObjectId(id),
+    //     });
+    //     if (!lesson)
+    //       return res.status(404).json({ message: 'Lesson not found' });
 
-        // author all lessons
-        const authorId = lesson.author?.userId;
-        const authorLessonsCount = await lessonsCollection.countDocuments({
-          'author.userId': authorId,
-        });
+    //     // author all lessons
+    //     const authorId = lesson.author?.userId;
+    //     const authorLessonsCount = await lessonsCollection.countDocuments({
+    //       'author.userId': authorId,
+    //     });
 
-        // currnet user like lesson data hunting
-        let hasLiked = false;
-        let hasFavorited = false;
+    //     // currnet user like lesson data hunting
+    //     let hasLiked = false;
+    //     let hasFavorited = false;
 
-        if (userId) {
-          hasLiked = lesson.likes?.includes(userId) || false;
-          const fav = await favoritesCollection.findOne({
-            lessonId: id,
-            userId: userId,
-          });
-          hasFavorited = !!fav;
-        }
+    //     if (userId) {
+    //       hasLiked = lesson.likes?.includes(userId) || false;
+    //       const fav = await favoritesCollection.findOne({
+    //         lessonId: id,
+    //         userId: userId,
+    //       });
+    //       hasFavorited = !!fav;
+    //     }
 
-        // lesson detail, author all lesson count, like count, favorites count sent
-        res.json({
-          ...lesson,
-          author: {
-            ...lesson.author,
-            lessonsCount: authorLessonsCount,
-          },
-          hasLiked,
-          hasFavorited,
-          likesCount: lesson.likes?.length || 0,
-        });
-      } catch (error) {
-        res.status(500).json({ error: error.message });
-      }
-    });
+    //     // lesson detail, author all lesson count, like count, favorites count sent
+    //     res.json({
+    //       ...lesson,
+    //       author: {
+    //         ...lesson.author,
+    //         lessonsCount: authorLessonsCount,
+    //       },
+    //       hasLiked,
+    //       hasFavorited,
+    //       likesCount: lesson.likes?.length || 0,
+    //     });
+    //   } catch (error) {
+    //     res.status(500).json({ error: error.message });
+    //   }
+    // });
 
     // Route: PATCH /lessons/:id
     // Purpose: Update specific fields of an existing lesson
@@ -259,24 +259,23 @@ async function run() {
         const { userId } = req.params;
         const { category, emotionalTone } = req.query;
 
-        // ১. ওই ইউজারের সব ফেভারিট রেকর্ড খুঁজে বের করা
+        // find favorite lesson by userId
         const userFavs = await favoritesCollection.find({ userId }).toArray();
         if (!userFavs.length) return res.json([]);
 
-        // ২. লেসন আইডি গুলোর একটি অ্যারে তৈরি করা
         const lessonIds = userFavs.map(fav => new ObjectId(fav.lessonId));
 
-        // ৩. ফিল্টারিং কোয়েরি তৈরি করা
+        // filter
         let filterQuery = { _id: { $in: lessonIds } };
         if (category) filterQuery.category = category;
         if (emotionalTone) filterQuery.emotionalTone = emotionalTone;
 
-        // ৪. লেসন কালেকশন থেকে ডাটা নিয়ে আসা
+        // lesson collection theke data find
         const savedLessons = await lessonsCollection
           .find(filterQuery)
           .toArray();
 
-        // প্রতিটি লেসনের লাইক কাউন্টও পাঠানো
+        // likeCounts
         const result = savedLessons.map(lesson => ({
           ...lesson,
           likesCount: lesson.likes?.length || 0,
@@ -381,7 +380,6 @@ async function run() {
     /**
      * Route: PATCH /admin/profile/update/:id
      * Purpose: Update Admin profile details (Name and Image)
-     * Access: Admin only (typically verified via middleware/session)
      */
     app.patch('/admin/profile/update/:id', async (req, res) => {
       try {
@@ -670,14 +668,63 @@ async function run() {
         res.status(500).send({ message: 'Failed to fetch contributors' });
       }
     });
-    // --- Get Most Saved Lessons ---
+
+    // --- Backend: Get Most Saved Lessons with check for current user ---
     app.get('/most-saved-lessons', async (req, res) => {
+      const userId = req.query.userId;
       const topLessons = await lessonsCollection
         .find({ visibility: 'Public' })
         .sort({ favoritesCount: -1 })
         .limit(4)
         .toArray();
+
+      if (userId) {
+        const userFavs = await favoritesCollection.find({ userId }).toArray();
+        const favIds = userFavs.map(f => f.lessonId);
+
+        const result = topLessons.map(lesson => ({
+          ...lesson,
+          hasFavorited: favIds.includes(lesson._id.toString()),
+        }));
+        return res.send(result);
+      }
+
       res.send(topLessons);
+    });
+
+    // Get Similar Lessons by category or emotional tone
+    app.get('/lessons/:id/similar', async (req, res) => {
+      try {
+        const { id } = req.params;
+
+        const currentLesson = await lessonsCollection.findOne({
+          _id: new ObjectId(id),
+        });
+        if (!currentLesson)
+          return res.status(404).json({ message: 'Not found' });
+
+        const similarLessons = await lessonsCollection
+          .find({
+            _id: { $ne: new ObjectId(id) },
+            visibility: 'Public',
+            $or: [
+              { category: currentLesson.category },
+              { emotionalTone: currentLesson.emotionalTone },
+            ],
+          })
+          .sort({ createdAt: -1 })
+          .limit(6)
+          .toArray();
+
+        const result = similarLessons.map(l => ({
+          ...l,
+          likesCount: l.likes?.length || 0,
+        }));
+
+        res.json(result);
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
     });
 
     console.log('Archive Ecosystem Online!');
