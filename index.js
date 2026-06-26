@@ -27,8 +27,59 @@ async function run() {
     const usersCollection = database.collection('user');
     const lessonReportCollection = database.collection('lessons_reports');
     const commentsCollection = database.collection('comments');
+    const sessionCollection = database.collection('session');
 
-    //Get lessons with Search, Filter & Pagination 
+    const verifyToken = async (req, res, next) => {
+      const authHeader = req.headers?.authorization;
+      if (!authHeader) {
+        return res.status(401).send({ message: 'Unauthorized access' });
+      }
+
+      const token = authHeader.split(' ')[1];
+      console.log('token', token);
+      if (!token) {
+        return res.status(401).send({ message: 'Unauthorized access' });
+      }
+
+      const query = { token: token };
+      const session = await sessionCollection.findOne(query);
+      if (!session) {
+        return res
+          .status(401)
+          .send({ message: 'Unauthorized access: Invalid session' });
+      }
+      const userId = session.userId;
+
+      const userQuery = { _id: userId };
+      const user = await usersCollection.findOne(userQuery);
+      console.log('user of the session', user);
+
+      // set data in the req object
+      req.user = user;
+      next();
+    };
+
+    // must be used after verifyToken
+    const verifyUser = async (req, res, next) => {
+      if (req.user?.role !== 'user') {
+        return res.status(403).send({ message: 'Forbidden access' });
+      }
+      next();
+    };
+
+    const verifyAnyUser = async (req, res, next) => {
+      if (!req.user) return res.status(401).send({ message: 'Unauthorized' });
+      next();
+    };
+
+    const verifyAdmin = async (req, res, next) => {
+      if (req.user?.role !== 'admin') {
+        return res.status(403).send({ message: 'Forbidden access' });
+      }
+      next();
+    };
+
+    //Get lessons with Search, Filter & Pagination
     app.get('/lessons', async (req, res) => {
       try {
         const {
@@ -90,127 +141,148 @@ async function run() {
     });
 
     // --- Admin: Get ALL lessons (Public + Private) with Reports + Stats ---
-    app.get('/admin/all-lessons', async (req, res) => {
-      try {
-        const lessons = await lessonsCollection
-          .find()
-          .sort({ createdAt: -1 })
-          .toArray();
+    app.get(
+      '/admin/all-lessons',
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const lessons = await lessonsCollection
+            .find()
+            .sort({ createdAt: -1 })
+            .toArray();
 
-        // all report
-        const reports = await lessonReportCollection.find().toArray();
+          // all report
+          const reports = await lessonReportCollection.find().toArray();
 
-        // lessonId report group
-        const reportMap = {};
+          // lessonId report group
+          const reportMap = {};
 
-        reports.forEach(report => {
-          if (!reportMap[report.lessonId]) {
-            reportMap[report.lessonId] = [];
-          }
-          reportMap[report.lessonId].push(report);
-        });
+          reports.forEach(report => {
+            if (!reportMap[report.lessonId]) {
+              reportMap[report.lessonId] = [];
+            }
+            reportMap[report.lessonId].push(report);
+          });
 
-        // lesson er sathe report o add kora hoyase
-        const lessonsWithReports = lessons.map(lesson => ({
-          ...lesson,
-          reports: reportMap[lesson._id.toString()] || [],
-        }));
+          // lesson er sathe report o add kora hoyase
+          const lessonsWithReports = lessons.map(lesson => ({
+            ...lesson,
+            reports: reportMap[lesson._id.toString()] || [],
+          }));
 
-        // Unique flagged lesson count
-        const flaggedCount = Object.keys(reportMap).length;
+          // Unique flagged lesson count
+          const flaggedCount = Object.keys(reportMap).length;
 
-        const stats = {
-          total: lessons.length,
-          publicCount: lessons.filter(l => l.visibility === 'Public').length,
-          privateCount: lessons.filter(l => l.visibility === 'Private').length,
-          featuredCount: lessons.filter(l => l.isFeatured).length,
-          flaggedCount,
-        };
+          const stats = {
+            total: lessons.length,
+            publicCount: lessons.filter(l => l.visibility === 'Public').length,
+            privateCount: lessons.filter(l => l.visibility === 'Private')
+              .length,
+            featuredCount: lessons.filter(l => l.isFeatured).length,
+            flaggedCount,
+          };
 
-        res.send({
-          lessons: lessonsWithReports,
-          stats,
-        });
-      } catch (error) {
-        console.error(error);
-        res.status(500).send({
-          message: 'Error fetching lessons',
-        });
-      }
-    });
+          res.send({
+            lessons: lessonsWithReports,
+            stats,
+          });
+        } catch (error) {
+          console.error(error);
+          res.status(500).send({
+            message: 'Error fetching lessons',
+          });
+        }
+      },
+    );
 
     // --- Admin: Update Featured/Reviewed status ---
-    app.patch('/admin/lessons/status/:id', async (req, res) => {
-      const id = req.params.id;
-      const updateData = req.body; // e.g., { isFeatured: true } or { isReviewed: true }
-      const result = await lessonsCollection.updateOne(
-        { _id: new ObjectId(id) },
-        { $set: updateData },
-      );
-      res.send(result);
-    });
+    app.patch(
+      '/admin/lessons/status/:id',
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        const id = req.params.id;
+        const updateData = req.body; // e.g., { isFeatured: true } or { isReviewed: true }
+        const result = await lessonsCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: updateData },
+        );
+        res.send(result);
+      },
+    );
 
     // --- Admin: Delete any lesson ---
-    app.delete('/admin/lessons/:id', async (req, res) => {
-      try {
-        const id = req.params.id;
-        if (!ObjectId.isValid(id))
-          return res.status(400).send('Invalid Lesson ID');
+    app.delete(
+      '/admin/lessons/:id',
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const id = req.params.id;
+          if (!ObjectId.isValid(id))
+            return res.status(400).send('Invalid Lesson ID');
 
-        // 1. Mul lesson delete kora hocche
-        const lessonResult = await lessonsCollection.deleteOne({
-          _id: new ObjectId(id),
-        });
+          // 1. Mul lesson delete kora hocche
+          const lessonResult = await lessonsCollection.deleteOne({
+            _id: new ObjectId(id),
+          });
 
-        // 2. Oi lesson er joto report 'lessons_reports' collection a ase sob clean kora hocche
-        const reportsResult = await lessonReportCollection.deleteMany({
-          lessonId: id, // lessonId eikhane string hisebe thake
-        });
+          // 2. Oi lesson er joto report 'lessons_reports' collection a ase sob clean kora hocche
+          const reportsResult = await lessonReportCollection.deleteMany({
+            lessonId: id, // lessonId eikhane string hisebe thake
+          });
 
-        // 3. Oi lesson jodi keu favorite kore thake, ta 'favorites' theke muche fela hocche
-        const favoritesResult = await favoritesCollection.deleteMany({
-          lessonId: id,
-        });
+          // 3. Oi lesson jodi keu favorite kore thake, ta 'favorites' theke muche fela hocche
+          const favoritesResult = await favoritesCollection.deleteMany({
+            lessonId: id,
+          });
 
-        // 4. Oi lesson er joto comments 'comments' collection a ase sob purge kora hocche
-        const commentsResult = await commentsCollection.deleteMany({
-          lessonId: id,
-        });
+          // 4. Oi lesson er joto comments 'comments' collection a ase sob purge kora hocche
+          const commentsResult = await commentsCollection.deleteMany({
+            lessonId: id,
+          });
 
-        // Sob result ekta object a kore pathano hocche jeno trace kora jay
-        res.send({
-          success: true,
-          message: 'Complete data purge successful! No orphans left.',
-          stats: {
-            lessonDeleted: lessonResult.deletedCount,
-            reportsCleared: reportsResult.deletedCount,
-            favoritesRemoved: favoritesResult.deletedCount,
-            commentsRemoved: commentsResult.deletedCount,
-          },
-        });
-      } catch (error) {
-        console.error('Purge Error:', error);
-        res.status(500).send({ message: 'Complete purge sequence failed' });
-      }
-    });
+          // Sob result ekta object a kore pathano hocche jeno trace kora jay
+          res.send({
+            success: true,
+            message: 'Complete data purge successful! No orphans left.',
+            stats: {
+              lessonDeleted: lessonResult.deletedCount,
+              reportsCleared: reportsResult.deletedCount,
+              favoritesRemoved: favoritesResult.deletedCount,
+              commentsRemoved: commentsResult.deletedCount,
+            },
+          });
+        } catch (error) {
+          console.error('Purge Error:', error);
+          res.status(500).send({ message: 'Complete purge sequence failed' });
+        }
+      },
+    );
 
     // Get lessons created by a specific user
-    app.get('/lessons/user/:userId', async (req, res) => {
-      try {
-        const { userId } = req.params;
-        const lessons = await lessonsCollection
-          .find({ 'author.userId': userId })
-          .sort({ createdAt: -1 })
-          .toArray();
+    app.get(
+      '/lessons/user/:userId',
+      verifyToken,
+      verifyUser,
+      async (req, res) => {
+        try {
+          const { userId } = req.params;
+          const lessons = await lessonsCollection
+            .find({ 'author.userId': userId })
+            .sort({ createdAt: -1 })
+            .toArray();
 
-        res.json(lessons); // Directly sending the DB data
-      } catch (error) {
-        res.status(500).json({ error: error.message });
-      }
-    });
+          res.json(lessons); // Directly sending the DB data
+        } catch (error) {
+          res.status(500).json({ error: error.message });
+        }
+      },
+    );
 
     // post lesson route
-    app.post('/lessons', async (req, res) => {
+    app.post('/lessons', verifyToken, verifyUser, async (req, res) => {
       const lesson = req.body;
       const userId = lesson.author?.userId;
 
@@ -241,10 +313,27 @@ async function run() {
       res.status(201).json(result);
     });
 
-    app.patch('/lessons/:id', async (req, res) => {
+    app.patch('/lessons/:id', verifyToken, async (req, res) => {
       try {
         const id = req.params.id;
-        // Extracting all potential update fields from body
+        const user = req.user;
+
+        // find lesson
+        const lesson = await lessonsCollection.findOne({
+          _id: new ObjectId(id),
+        });
+        if (!lesson)
+          return res.status(404).send({ message: 'Lesson not found' });
+
+        // owner secure
+        if (
+          lesson.author?.userId !== user._id.toString() &&
+          user.role !== 'admin'
+        ) {
+          return res
+            .status(403)
+            .send({ message: 'You cannot edit this lesson' });
+        }
         const {
           visibility,
           accessLevel,
@@ -277,31 +366,62 @@ async function run() {
       }
     });
 
-    // --- User/Admin: Delete any lesson & its reports ---
-    app.delete('/lessons/:id', async (req, res) => {
+    // --- User/Admin: Delete lesson with ownership check ---
+    app.delete('/lessons/:id', verifyToken, async (req, res) => {
       try {
         const id = req.params.id;
-        if (!ObjectId.isValid(id)) return res.status(400).send('Invalid ID');
+        const user = req.user;
 
-        // Sob metadata delete kora hocche
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({ message: 'Invalid ID' });
+        }
+
+        // find lesson
+        const lesson = await lessonsCollection.findOne({
+          _id: new ObjectId(id),
+        });
+
+        if (!lesson) {
+          return res.status(404).send({ message: 'Lesson not found!' });
+        }
+
+        //  owner and admin check
+        const isOwner = lesson.author?.userId === user._id.toString();
+        const isAdmin = user.role === 'admin';
+
+        if (!isOwner && !isAdmin) {
+          // owner and admin na hole
+          return res.status(403).send({
+            success: false,
+            message: 'Forbidden: You can only delete your own lessons.',
+          });
+        }
+
         await lessonsCollection.deleteOne({ _id: new ObjectId(id) });
+
+        // same lesosn er sob collection theke data delete
         await lessonReportCollection.deleteMany({ lessonId: id });
         await favoritesCollection.deleteMany({ lessonId: id });
         await commentsCollection.deleteMany({ lessonId: id });
 
         res.send({
           success: true,
-          message: 'Your lesson and metadata deleted.',
+          message: isAdmin
+            ? 'Admin deleted the lesson and its metadata.'
+            : 'Your lesson has been deleted successfully.',
         });
       } catch (error) {
-        res.status(500).send({ message: 'Delete failed' });
+        console.error('Delete Error:', error);
+        res
+          .status(500)
+          .send({ message: 'Internal server error during deletion' });
       }
     });
 
     // like count detail route
-    app.post('/lessons/:id/like', async (req, res) => {
+    app.post('/lessons/:id/like', verifyToken, async (req, res) => {
       const lessonId = req.params.id;
-      const { userId } = req.body;
+      const userId = req.user._id.toString();
       const lesson = await lessonsCollection.findOne({
         _id: new ObjectId(lessonId),
       });
@@ -325,9 +445,20 @@ async function run() {
     });
 
     // favorites lesson detail by userId
-    app.get('/favorites/:userId', async (req, res) => {
+    app.get('/favorites/:userId', verifyToken, async (req, res) => {
       try {
         const { userId } = req.params;
+        const authenticatedUserId = req.user._id.toString();
+
+        // owner check
+        if (userId !== authenticatedUserId) {
+          return res.status(403).json({
+            success: false,
+            message:
+              "Forbidden: You cannot access someone else's favorite list.",
+          });
+        }
+
         const { category, emotionalTone } = req.query;
 
         // find favorite lesson by userId
@@ -346,7 +477,7 @@ async function run() {
           .find(filterQuery)
           .toArray();
 
-        // likeCounts
+        // likeCounts add
         const result = savedLessons.map(lesson => ({
           ...lesson,
           likesCount: lesson.likes?.length || 0,
@@ -359,14 +490,18 @@ async function run() {
     });
 
     // favorites lesson detail route
-    app.post('/lessons/:id/favorite', async (req, res) => {
+    app.post('/lessons/:id/favorite', verifyToken, async (req, res) => {
       const lessonId = req.params.id;
-      const { userId } = req.body;
+      const userId = req.user._id.toString();
+
+      // age theke favourite kora ase ki na
       const existingFav = await favoritesCollection.findOne({
         lessonId,
         userId,
       });
+
       if (existingFav) {
+        // যদি আগে থেকে থাকে, তবে ডিলিট (Unfavorite)
         await favoritesCollection.deleteOne({ lessonId, userId });
         await lessonsCollection.updateOne(
           { _id: new ObjectId(lessonId) },
@@ -374,6 +509,7 @@ async function run() {
         );
         res.json({ favorited: false, message: 'Removed' });
       } else {
+        // যদি না থাকে, তবে নতুন এন্ট্রি (Favorite)
         await favoritesCollection.insertOne({
           lessonId,
           userId,
@@ -391,7 +527,7 @@ async function run() {
      * Route: GET /admin/users
      * Fetching users and their total lessons count
      */
-    app.get('/admin/users', async (req, res) => {
+    app.get('/admin/users', verifyToken, verifyAdmin, async (req, res) => {
       try {
         const users = await usersCollection.find().toArray();
 
@@ -420,79 +556,94 @@ async function run() {
      * Route: PATCH /admin/users/role/:id
      * Update role from 'user' to 'admin'
      */
-    app.patch('/admin/users/role/:id', async (req, res) => {
-      try {
-        const id = req.params.id;
-        const filter = { _id: new ObjectId(id) };
-        const updateDoc = { $set: { role: 'admin' } };
-        const result = await usersCollection.updateOne(filter, updateDoc);
-        res.send(result);
-      } catch (error) {
-        res.status(500).send({ message: 'Failed to update role' });
-      }
-    });
+    app.patch(
+      '/admin/users/role/:id',
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const id = req.params.id;
+          const filter = { _id: new ObjectId(id) };
+          const updateDoc = { $set: { role: 'admin' } };
+          const result = await usersCollection.updateOne(filter, updateDoc);
+          res.send(result);
+        } catch (error) {
+          res.status(500).send({ message: 'Failed to update role' });
+        }
+      },
+    );
 
     /**
      * Route: DELETE /admin/users/:id
      * Delete user account permanently
      */
-    app.delete('/admin/users/:id', async (req, res) => {
-      try {
-        const id = req.params.id;
-        const result = await usersCollection.deleteOne({
-          _id: new ObjectId(id),
-        });
-        res.send(result);
-      } catch (error) {
-        res.status(500).send({ message: 'Failed to delete user' });
-      }
-    });
+    app.delete(
+      '/admin/users/:id',
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const id = req.params.id;
+          const result = await usersCollection.deleteOne({
+            _id: new ObjectId(id),
+          });
+          res.send(result);
+        } catch (error) {
+          res.status(500).send({ message: 'Failed to delete user' });
+        }
+      },
+    );
 
     /**
      * Route: PATCH /admin/profile/update/:id
      * Purpose: Update Admin profile details (Name and Image)
      */
-    app.patch('/admin/profile/update/:id', async (req, res) => {
-      try {
-        const id = req.params.id;
-        const { name, image } = req.body; // Extract data from request body
+    app.patch(
+      '/admin/profile/update/:id',
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const id = req.params.id;
+          const { name, image } = req.body; // Extract data from request body
 
-        // Create filter using MongoDB ObjectId
-        const filter = { _id: new ObjectId(id) };
+          // Create filter using MongoDB ObjectId
+          const filter = { _id: new ObjectId(id) };
 
-        // Define the update operation
-        const updateDoc = {
-          $set: {
-            name: name,
-            image: image, // Updates both image and photoURL fields if needed
-            photoURL: image,
-          },
-        };
+          // Define the update operation
+          const updateDoc = {
+            $set: {
+              name: name,
+              image: image, // Updates both image and photoURL fields if needed
+              photoURL: image,
+            },
+          };
 
-        // Execute the update in the 'user' collection
-        const result = await usersCollection.updateOne(filter, updateDoc);
+          // Execute the update in the 'user' collection
+          const result = await usersCollection.updateOne(filter, updateDoc);
 
-        if (result.modifiedCount > 0) {
-          res.status(200).send({
-            success: true,
-            message: 'Admin profile updated in the archive successfully',
-            result,
-          });
-        } else {
-          res.status(404).send({
+          if (result.modifiedCount > 0) {
+            res.status(200).send({
+              success: true,
+              message: 'Admin profile updated in the archive successfully',
+              result,
+            });
+          } else {
+            res.status(404).send({
+              success: false,
+              message: 'No changes made or user not found',
+            });
+          }
+        } catch (error) {
+          // Handle potential server or database errors
+          res.status(500).send({
             success: false,
-            message: 'No changes made or user not found',
+            message: 'Failed to update admin profile registry',
+            error: error.message,
           });
         }
-      } catch (error) {
-        // Handle potential server or database errors
-        res.status(500).send({
-          success: false,
-          message: 'Failed to update admin profile registry',
-          error: error.message,
-        });
-      }
-    });
+      },
+    );
 
     // --- REPORTING SYSTEM ---
 
@@ -500,173 +651,181 @@ async function run() {
      * Route: POST /lessons/:id/report
      * Purpose: Allows logged-in users to flag inappropriate content
      */
-    app.post('/lessons/:id/report', async (req, res) => {
-      try {
-        const lessonId = req.params.id;
-        const {
-          userId,
-          userName,
-          userEmail,
-          reason,
-          additionalDetails,
-          lessonTitle,
-        } = req.body;
+   app.post('/lessons/:id/report', verifyToken, async (req, res) => {
+     try {
+       const lessonId = req.params.id;
+       const { reason, additionalDetails, lessonTitle } = req.body; 
 
-        const reportEntry = {
-          lessonId,
-          lessonTitle,
-          reporterUserId: userId,
-          reporterName: userName,
-          reporterEmail: userEmail,
-          reason,
-          additionalDetails,
-          timestamp: new Date(),
-        };
+       const reportEntry = {
+         lessonId,
+         lessonTitle,
+         reporterUserId: req.user._id.toString(),  // from token
+         reporterName: req.user.name, // from token
+         reporterEmail: req.user.email, // from token
+         reason,
+         additionalDetails,
+         timestamp: new Date(),
+       };
 
-        const result = await lessonReportCollection.insertOne(reportEntry);
-        res.status(201).send({ success: true, result });
-      } catch (error) {
-        res.status(500).send({ message: 'Error reporting content' });
-      }
-    });
+       const result = await lessonReportCollection.insertOne(reportEntry);
+       res.status(201).send({ success: true, result });
+     } catch (error) {
+       res.status(500).send({ message: 'Error reporting content' });
+     }
+   });
 
     /**
      * Route: GET /admin/reported-lessons
      * Improved with $lookup to fetch lesson image and reporter info
      */
-    app.get('/admin/reported-lessons', async (req, res) => {
-      try {
-        const result = await lessonReportCollection
-          .aggregate([
-            {
-              $group: {
-                _id: '$lessonId',
-                lessonTitle: { $first: '$lessonTitle' },
-                reportCount: { $sum: 1 },
-                lastReportedAt: { $max: '$timestamp' },
-                allReports: { $push: '$$ROOT' },
-              },
-            },
-            // ১. Lessons collection theke Image anar jonno lookup
-            {
-              $lookup: {
-                from: 'lessons',
-                let: { lId: '$_id' },
-                pipeline: [
-                  {
-                    $match: {
-                      $expr: { $eq: [{ $toString: '$_id' }, '$$lId'] },
-                    },
-                  },
-                  { $project: { image: 1 } },
-                ],
-                as: 'lessonData',
-              },
-            },
-            // ২. Reporter er info anar jonno Reports unwind kore Users join kora
-            { $unwind: '$allReports' },
-            {
-              $lookup: {
-                from: 'user',
-                let: { uId: '$allReports.reporterUserId' },
-                pipeline: [
-                  {
-                    $match: {
-                      $expr: { $eq: [{ $toString: '$_id' }, '$$uId'] },
-                    },
-                  },
-                  { $project: { name: 1, email: 1, image: 1 } },
-                ],
-                as: 'reporterDetails',
-              },
-            },
-            {
-              $addFields: {
-                'allReports.reporterInfo': {
-                  $arrayElemAt: ['$reporterDetails', 0],
+    app.get(
+      '/admin/reported-lessons',
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const result = await lessonReportCollection
+            .aggregate([
+              {
+                $group: {
+                  _id: '$lessonId',
+                  lessonTitle: { $first: '$lessonTitle' },
+                  reportCount: { $sum: 1 },
+                  lastReportedAt: { $max: '$timestamp' },
+                  allReports: { $push: '$$ROOT' },
                 },
               },
-            },
-            // ৩. Sob gulo abar group kora original lessonId base-e
-            {
-              $group: {
-                _id: '$_id',
-                lessonTitle: { $first: '$lessonTitle' },
-                reportCount: { $first: '$reportCount' },
-                lastReportedAt: { $first: '$lastReportedAt' },
-                lessonImage: {
-                  $first: { $arrayElemAt: ['$lessonData.image', 0] },
+              // ১. Lessons collection theke Image anar jonno lookup
+              {
+                $lookup: {
+                  from: 'lessons',
+                  let: { lId: '$_id' },
+                  pipeline: [
+                    {
+                      $match: {
+                        $expr: { $eq: [{ $toString: '$_id' }, '$$lId'] },
+                      },
+                    },
+                    { $project: { image: 1 } },
+                  ],
+                  as: 'lessonData',
                 },
-                allReports: { $push: '$allReports' },
               },
-            },
-            { $sort: { lastReportedAt: -1 } },
-          ])
-          .toArray();
+              // ২. Reporter er info anar jonno Reports unwind kore Users join kora
+              { $unwind: '$allReports' },
+              {
+                $lookup: {
+                  from: 'user',
+                  let: { uId: '$allReports.reporterUserId' },
+                  pipeline: [
+                    {
+                      $match: {
+                        $expr: { $eq: [{ $toString: '$_id' }, '$$uId'] },
+                      },
+                    },
+                    { $project: { name: 1, email: 1, image: 1 } },
+                  ],
+                  as: 'reporterDetails',
+                },
+              },
+              {
+                $addFields: {
+                  'allReports.reporterInfo': {
+                    $arrayElemAt: ['$reporterDetails', 0],
+                  },
+                },
+              },
+              // ৩. Sob gulo abar group kora original lessonId base-e
+              {
+                $group: {
+                  _id: '$_id',
+                  lessonTitle: { $first: '$lessonTitle' },
+                  reportCount: { $first: '$reportCount' },
+                  lastReportedAt: { $first: '$lastReportedAt' },
+                  lessonImage: {
+                    $first: { $arrayElemAt: ['$lessonData.image', 0] },
+                  },
+                  allReports: { $push: '$allReports' },
+                },
+              },
+              { $sort: { lastReportedAt: -1 } },
+            ])
+            .toArray();
 
-        res.send(result);
-      } catch (err) {
-        console.error(err);
-        res.status(500).send('Admin data fetch error');
-      }
-    });
+          res.send(result);
+        } catch (err) {
+          console.error(err);
+          res.status(500).send('Admin data fetch error');
+        }
+      },
+    );
 
     /**
      * Route: DELETE /admin/reports/ignore/:lessonId
      * Purpose: Clears all reports for a specific lesson without deleting the lesson
      */
-    app.delete('/admin/reports/ignore/:lessonId', async (req, res) => {
-      try {
-        const { lessonId } = req.params;
-        const result = await lessonReportCollection.deleteMany({ lessonId });
-        res.send({ success: true, message: 'Reports cleared', result });
-      } catch (error) {
-        res.status(500).send({ message: 'Action failed' });
-      }
-    });
+    app.delete(
+      '/admin/reports/ignore/:lessonId',
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const { lessonId } = req.params;
+          const result = await lessonReportCollection.deleteMany({ lessonId });
+          res.send({ success: true, message: 'Reports cleared', result });
+        } catch (error) {
+          res.status(500).send({ message: 'Action failed' });
+        }
+      },
+    );
 
     /**
      * Route: DELETE /admin/lessons/:id (Modified)
      * Purpose: Deletes a lesson and also cleans up its associated reports
      */
-    app.delete('/admin/lessons/:id', async (req, res) => {
-      try {
-        const id = req.params.id;
+    app.delete(
+      '/admin/lessons/:id',
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const id = req.params.id;
 
-        // 1. Delete lesson from main collection
-        const lessonResult = await lessonsCollection.deleteOne({
-          _id: new ObjectId(id),
-        });
+          // 1. Delete lesson from main collection
+          const lessonResult = await lessonsCollection.deleteOne({
+            _id: new ObjectId(id),
+          });
 
-        // 2. Clean up associated flags/reports
-        const reportsResult = await lessonReportCollection.deleteMany({
-          lessonId: id,
-        });
+          // 2. Clean up associated flags/reports
+          const reportsResult = await lessonReportCollection.deleteMany({
+            lessonId: id,
+          });
 
-        // 3. Clean up user favorites (Requirement 2: No orphans)
-        const favoritesResult = await favoritesCollection.deleteMany({
-          lessonId: id,
-        });
+          // 3. Clean up user favorites (Requirement 2: No orphans)
+          const favoritesResult = await favoritesCollection.deleteMany({
+            lessonId: id,
+          });
 
-        // 4. Clean up lesson comments (Requirement 2: No orphans)
-        const commentsResult = await commentsCollection.deleteMany({
-          lessonId: id,
-        });
+          // 4. Clean up lesson comments (Requirement 2: No orphans)
+          const commentsResult = await commentsCollection.deleteMany({
+            lessonId: id,
+          });
 
-        res.send({
-          success: true,
-          message: 'Complete purge successful',
-          stats: {
-            lessonDeleted: lessonResult.deletedCount,
-            reportsCleared: reportsResult.deletedCount,
-            favoritesRemoved: favoritesResult.deletedCount,
-            commentsRemoved: commentsResult.deletedCount,
-          },
-        });
-      } catch (error) {
-        res.status(500).send({ message: 'Complete purge sequence failed' });
-      }
-    });
+          res.send({
+            success: true,
+            message: 'Complete purge successful',
+            stats: {
+              lessonDeleted: lessonResult.deletedCount,
+              reportsCleared: reportsResult.deletedCount,
+              favoritesRemoved: favoritesResult.deletedCount,
+              commentsRemoved: commentsResult.deletedCount,
+            },
+          });
+        } catch (error) {
+          res.status(500).send({ message: 'Complete purge sequence failed' });
+        }
+      },
+    );
 
     // --- Get Featured Lessons for Home Page (Strictly Featured only) ---
     app.get('/featured-lessons', async (req, res) => {
@@ -692,68 +851,80 @@ async function run() {
     /**
      * Route: PATCH /users/plan-update route by user email
      */
-    app.patch('/users/plan-update', async (req, res) => {
-      try {
-        const { email } = req.body;
-        if (!email)
-          return res.status(400).send({ message: 'Email is required' });
+    app.patch(
+      '/users/plan-update',
+      verifyToken,
+      verifyAnyUser,
+      async (req, res) => {
+        try {
+          const { email } = req.body;
+          if (!email)
+            return res.status(400).send({ message: 'Email is required' });
 
-        const result = await usersCollection.updateOne(
-          { email: email },
-          { $set: { plan: 'premium' } },
-        );
+          const result = await usersCollection.updateOne(
+            { email: req.user.email },
+            { $set: { plan: 'premium' } },
+          );
 
-        if (result.modifiedCount > 0) {
-          res.send({ success: true, message: 'Plan upgraded to premium' });
-        } else {
-          res.status(404).send({
-            success: false,
-            message: 'User not found or already premium',
-          });
+          if (result.modifiedCount > 0) {
+            res.send({ success: true, message: 'Plan upgraded to premium' });
+          } else {
+            res.status(404).send({
+              success: false,
+              message: 'User not found or already premium',
+            });
+          }
+        } catch (error) {
+          res
+            .status(500)
+            .send({ message: 'Upgrade failed', error: error.message });
         }
-      } catch (error) {
-        res
-          .status(500)
-          .send({ message: 'Upgrade failed', error: error.message });
-      }
-    });
+      },
+    );
 
     // 1. Route: POST /lessons/:id/comments
     // Purpose: Save a new comment/reflection for a specific lesson
-    app.post('/lessons/:id/comments', async (req, res) => {
-      try {
-        const lessonId = req.params.id;
-        const { userId, userName, text } = req.body;
+  app.post('/lessons/:id/comments', verifyToken, async (req, res) => {
+    try {
+      const lessonId = req.params.id;
+      const { text } = req.body; 
 
-        const newComment = {
-          lessonId,
-          userId,
-          userName,
-          text,
-          createdAt: new Date(), // Storing timestamp
-        };
+      // name and id get from token
+      const newComment = {
+        lessonId,
+        userId: req.user._id.toString(),
+        userName: req.user.name,
+        userImage: req.user.image, 
+        text: text,
+        createdAt: new Date(),
+      };
 
-        const result = await commentsCollection.insertOne(newComment);
-
-        // Return the inserted object with its ID to the frontend
-        res.status(201).json({ _id: result.insertedId, ...newComment });
-      } catch (error) {
-        res.status(500).json({ message: 'Failed to save reflection' });
-      }
-    });
+      const result = await commentsCollection.insertOne(newComment);
+      res.status(201).json({ _id: result.insertedId, ...newComment });
+    } catch (error) {
+      res.status(500).json({ message: 'Failed to save comment' });
+    }
+  });
 
     // 2. Modify existing GET /lessons/:id to include comments
-    // Update your existing app.get('/lessons/:id', ...) route as shown below:
-    app.get('/lessons/:id', async (req, res) => {
+    app.get('/lessons/:id', verifyToken, async (req, res) => {
       try {
         const { id } = req.params;
-        const userId = req.query.userId;
+        const userId = req.user._id.toString();
 
         const lesson = await lessonsCollection.findOne({
           _id: new ObjectId(id),
         });
         if (!lesson)
           return res.status(404).json({ message: 'Lesson not found' });
+
+        // --- Private visibility check ---
+        const isOwner = lesson.author?.userId === req.user._id.toString();
+        const isAdmin = req.user.role === 'admin';
+
+        if (lesson.visibility === 'Private' && !isOwner && !isAdmin) {
+          return res.status(403).json({ message: 'This is a private lesson.' });
+        }
 
         // --- FETCH COMMENTS FOR THIS LESSON ---
         const comments = await commentsCollection
