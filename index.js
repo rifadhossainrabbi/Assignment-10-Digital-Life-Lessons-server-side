@@ -28,13 +28,65 @@ async function run() {
     const lessonReportCollection = database.collection('lessons_reports');
     const commentsCollection = database.collection('comments');
 
-    // Get lessons route (only public visibility)
+    //Get lessons with Search, Filter & Pagination 
     app.get('/lessons', async (req, res) => {
-      const lessons = await lessonsCollection
-        .find({ visibility: 'Public' })
-        .sort({ createdAt: -1 })
-        .toArray();
-      res.json(lessons.map(l => ({ ...l, likesCount: l.likes?.length || 0 })));
+      try {
+        const {
+          search,
+          category,
+          emotionalTone,
+          page = 1,
+          limit = 8,
+        } = req.query;
+
+        // only public lesson send
+        let query = { visibility: 'Public' };
+
+        // search filter
+        if (search) {
+          query.$or = [
+            { title: { $regex: search, $options: 'i' } },
+            { description: { $regex: search, $options: 'i' } },
+          ];
+        }
+
+        // category filter
+        if (category && category !== 'All') {
+          query.category = category;
+        }
+
+        // emotional tone filter
+        if (emotionalTone && emotionalTone !== 'All') {
+          query.emotionalTone = emotionalTone;
+        }
+
+        // pagination
+        const pageNumber = parseInt(page);
+        const limitNumber = parseInt(limit);
+        const skip = (pageNumber - 1) * limitNumber;
+
+        // all lesson
+        const totalLessons = await lessonsCollection.countDocuments(query);
+        const lessons = await lessonsCollection
+          .find(query)
+          .sort({ createdAt: -1 }) // সবসময় লেটেস্ট আগে
+          .skip(skip)
+          .limit(limitNumber)
+          .toArray();
+
+        // send result
+        res.send({
+          lessons: lessons.map(l => ({
+            ...l,
+            likesCount: l.likes?.length || 0,
+          })),
+          totalLessons,
+          totalPages: Math.ceil(totalLessons / limitNumber),
+          currentPage: pageNumber,
+        });
+      } catch (error) {
+        res.status(500).send({ message: 'Error fetching lessons' });
+      }
     });
 
     // --- Admin: Get ALL lessons (Public + Private) with Reports + Stats ---
@@ -189,57 +241,6 @@ async function run() {
       res.status(201).json(result);
     });
 
-    // Get lesson details with Author stats and User interactions
-    // app.get('/lessons/:id', async (req, res) => {
-    //   try {
-    //     // params
-    //     const { id } = req.params;
-    //     // query
-    //     const userId = req.query.userId;
-
-    //     const lesson = await lessonsCollection.findOne({
-    //       _id: new ObjectId(id),
-    //     });
-    //     if (!lesson)
-    //       return res.status(404).json({ message: 'Lesson not found' });
-
-    //     // author all lessons
-    //     const authorId = lesson.author?.userId;
-    //     const authorLessonsCount = await lessonsCollection.countDocuments({
-    //       'author.userId': authorId,
-    //     });
-
-    //     // currnet user like lesson data hunting
-    //     let hasLiked = false;
-    //     let hasFavorited = false;
-
-    //     if (userId) {
-    //       hasLiked = lesson.likes?.includes(userId) || false;
-    //       const fav = await favoritesCollection.findOne({
-    //         lessonId: id,
-    //         userId: userId,
-    //       });
-    //       hasFavorited = !!fav;
-    //     }
-
-    //     // lesson detail, author all lesson count, like count, favorites count sent
-    //     res.json({
-    //       ...lesson,
-    //       author: {
-    //         ...lesson.author,
-    //         lessonsCount: authorLessonsCount,
-    //       },
-    //       hasLiked,
-    //       hasFavorited,
-    //       likesCount: lesson.likes?.length || 0,
-    //     });
-    //   } catch (error) {
-    //     res.status(500).json({ error: error.message });
-    //   }
-    // });
-
-    // Route: PATCH /lessons/:id
-    // Purpose: Update specific fields of an existing lesson
     app.patch('/lessons/:id', async (req, res) => {
       try {
         const id = req.params.id;
