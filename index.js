@@ -651,28 +651,28 @@ async function run() {
      * Route: POST /lessons/:id/report
      * Purpose: Allows logged-in users to flag inappropriate content
      */
-   app.post('/lessons/:id/report', verifyToken, async (req, res) => {
-     try {
-       const lessonId = req.params.id;
-       const { reason, additionalDetails, lessonTitle } = req.body; 
+    app.post('/lessons/:id/report', verifyToken, async (req, res) => {
+      try {
+        const lessonId = req.params.id;
+        const { reason, additionalDetails, lessonTitle } = req.body;
 
-       const reportEntry = {
-         lessonId,
-         lessonTitle,
-         reporterUserId: req.user._id.toString(),  // from token
-         reporterName: req.user.name, // from token
-         reporterEmail: req.user.email, // from token
-         reason,
-         additionalDetails,
-         timestamp: new Date(),
-       };
+        const reportEntry = {
+          lessonId,
+          lessonTitle,
+          reporterUserId: req.user._id.toString(), // from token
+          reporterName: req.user.name, // from token
+          reporterEmail: req.user.email, // from token
+          reason,
+          additionalDetails,
+          timestamp: new Date(),
+        };
 
-       const result = await lessonReportCollection.insertOne(reportEntry);
-       res.status(201).send({ success: true, result });
-     } catch (error) {
-       res.status(500).send({ message: 'Error reporting content' });
-     }
-   });
+        const result = await lessonReportCollection.insertOne(reportEntry);
+        res.status(201).send({ success: true, result });
+      } catch (error) {
+        res.status(500).send({ message: 'Error reporting content' });
+      }
+    });
 
     /**
      * Route: GET /admin/reported-lessons
@@ -884,27 +884,27 @@ async function run() {
 
     // 1. Route: POST /lessons/:id/comments
     // Purpose: Save a new comment/reflection for a specific lesson
-  app.post('/lessons/:id/comments', verifyToken, async (req, res) => {
-    try {
-      const lessonId = req.params.id;
-      const { text } = req.body; 
+    app.post('/lessons/:id/comments', verifyToken, async (req, res) => {
+      try {
+        const lessonId = req.params.id;
+        const { text } = req.body;
 
-      // name and id get from token
-      const newComment = {
-        lessonId,
-        userId: req.user._id.toString(),
-        userName: req.user.name,
-        userImage: req.user.image, 
-        text: text,
-        createdAt: new Date(),
-      };
+        // name and id get from token
+        const newComment = {
+          lessonId,
+          userId: req.user._id.toString(),
+          userName: req.user.name,
+          userImage: req.user.image,
+          text: text,
+          createdAt: new Date(),
+        };
 
-      const result = await commentsCollection.insertOne(newComment);
-      res.status(201).json({ _id: result.insertedId, ...newComment });
-    } catch (error) {
-      res.status(500).json({ message: 'Failed to save comment' });
-    }
-  });
+        const result = await commentsCollection.insertOne(newComment);
+        res.status(201).json({ _id: result.insertedId, ...newComment });
+      } catch (error) {
+        res.status(500).json({ message: 'Failed to save comment' });
+      }
+    });
 
     // 2. Modify existing GET /lessons/:id to include comments
     app.get('/lessons/:id', verifyToken, async (req, res) => {
@@ -1063,4 +1063,10 @@ async function run() {
   }
 }
 run().catch(console.dir);
-app.listen(PORT, () => console.log(`Running on ${PORT}`));
+app.get('/', (req, res) => {
+  res.send('Server is running fine!');
+});
+
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
+});
