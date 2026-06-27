@@ -282,7 +282,7 @@ async function run() {
     );
 
     // post lesson route
-    app.post('/lessons', verifyToken, verifyUser, async (req, res) => {
+    app.post('/lessons', verifyToken, async (req, res) => {
       const lesson = req.body;
       const userId = lesson.author?.userId;
 
@@ -854,15 +854,15 @@ async function run() {
     app.patch(
       '/users/plan-update',
       verifyToken,
-      verifyAnyUser,
       async (req, res) => {
         try {
           const { email } = req.body;
+          console.log(email, "customer email")
           if (!email)
             return res.status(400).send({ message: 'Email is required' });
 
           const result = await usersCollection.updateOne(
-            { email: req.user.email },
+            { email: email },
             { $set: { plan: 'premium' } },
           );
 
