@@ -157,54 +157,59 @@ async function run() {
       async (req, res) => {
         try {
           const lessons = await lessonsCollection
-            .find()
-            .sort({ createdAt: -1 })
+            .aggregate([
+              {
+                // ObjectId k string kora hoyase
+                // karon report collection a lesson id string a ase
+                $addFields: {
+                  lessonIdStr: { $toString: '$_id' },
+                },
+              },
+              {
+                // JOIN kora (lessons + lessons_reports)
+                $lookup: {
+                  from: 'lessons_reports', //kon colection theke data anbe
+                  localField: 'lessonIdStr', // lessons collection string id
+                  foreignField: 'lessonId', // reports collection id
+                  as: 'reports', // sob report joma hobe
+                },
+              },
+              {
+                // sorting notun gulo age
+                $sort: { createdAt: -1 },
+              },
+              {
+                // clean up barti field baad
+                $project: { lessonIdStr: 0 },
+              },
+            ])
             .toArray();
 
-          // all report
-          const reports = await lessonReportCollection.find().toArray();
-
-          // lessonId report group
-          const reportMap = {};
-
-          reports.forEach(report => {
-            if (!reportMap[report.lessonId]) {
-              reportMap[report.lessonId] = [];
-            }
-            reportMap[report.lessonId].push(report);
-          });
-
-          // lesson er sathe report o add kora hoyase
-          const lessonsWithReports = lessons.map(lesson => ({
-            ...lesson,
-            reports: reportMap[lesson._id.toString()] || [],
-          }));
-
-          // Unique flagged lesson count
-          const flaggedCount = Object.keys(reportMap).length;
-
+          // ektar moddhe sob data 
           const stats = {
             total: lessons.length,
-            publicCount: lessons.filter(l => l.visibility === 'Public').length,
-            privateCount: lessons.filter(l => l.visibility === 'Private')
-              .length,
-            featuredCount: lessons.filter(l => l.isFeatured).length,
-            flaggedCount,
+            publicCount: 0,
+            privateCount: 0,
+            featuredCount: 0,
+            flaggedCount: 0,
           };
 
-          res.send({
-            lessons: lessonsWithReports,
-            stats,
+          lessons.forEach(l => {
+            if (l.visibility === 'Public') stats.publicCount++;
+            else if (l.visibility === 'Private') stats.privateCount++;
+
+            if (l.isFeatured) stats.featuredCount++;
+
+            if (l.reports && l.reports.length > 0) stats.flaggedCount++;
           });
+
+          res.send({ lessons, stats });
         } catch (error) {
-          console.error(error);
-          res.status(500).send({
-            message: 'Error fetching lessons',
-          });
+          console.error('Admin aggregation error:', error);
+          res.status(500).send({ message: 'System synchronization failed' });
         }
       },
     );
-
     // --- Admin: Update Featured/Reviewed status ---
     app.patch(
       '/admin/lessons/status/:id',
