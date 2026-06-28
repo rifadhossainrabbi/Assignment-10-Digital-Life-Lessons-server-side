@@ -900,47 +900,44 @@ async function run() {
         const { id } = req.params;
         const userId = req.user._id.toString();
 
+        // find main lesson
         const lesson = await lessonsCollection.findOne({
           _id: new ObjectId(id),
         });
+
         if (!lesson)
           return res.status(404).json({ message: 'Lesson not found' });
 
-        // --- Private visibility check ---
-        const isOwner = lesson.author?.userId === req.user._id.toString();
+        // owner and admin can access
+        const isOwner = lesson.author?.userId === userId;
         const isAdmin = req.user.role === 'admin';
 
         if (lesson.visibility === 'Private' && !isOwner && !isAdmin) {
           return res.status(403).json({ message: 'This is a private lesson.' });
         }
 
-        // --- FETCH COMMENTS FOR THIS LESSON ---
-        const comments = await commentsCollection
-          .find({ lessonId: id })
-          .sort({ createdAt: -1 }) // Show newest comments first
-          .toArray();
+        // lesson, comment, favorite sob find kora ektar moddhe jeno code fast hoy
+        const [comments, authorLessonsCount, favoriteEntry] = await Promise.all(
+          [
+            commentsCollection
+              .find({ lessonId: id })
+              .sort({ createdAt: -1 })
+              .toArray(),
+            lessonsCollection.countDocuments({
+              'author.userId': lesson.author?.userId,
+            }),
+            favoritesCollection.findOne({ lessonId: id, userId: userId }),
+          ],
+        );
 
-        const authorId = lesson.author?.userId;
-        const authorLessonsCount = await lessonsCollection.countDocuments({
-          'author.userId': authorId,
-        });
+        // like check
+        const hasLiked = lesson.likes?.includes(userId) || false;
+        const hasFavorited = !!favoriteEntry;
 
-        let hasLiked = false;
-        let hasFavorited = false;
-
-        if (userId) {
-          hasLiked = lesson.likes?.includes(userId) || false;
-          const fav = await favoritesCollection.findOne({
-            lessonId: id,
-            userId: userId,
-          });
-          hasFavorited = !!fav;
-        }
-
-        // Include comments in the response object
+        // sob data eksathe pathay dawa hocce
         res.json({
           ...lesson,
-          comments, // Sending comments array to frontend
+          comments,
           author: {
             ...lesson.author,
             lessonsCount: authorLessonsCount,
@@ -950,7 +947,10 @@ async function run() {
           likesCount: lesson.likes?.length || 0,
         });
       } catch (error) {
-        res.status(500).json({ error: error.message });
+        console.error('Error fetching lesson details:', error);
+        res.status(500).json({
+          error: 'Internal server error while fetching lesson details',
+        });
       }
     });
 
