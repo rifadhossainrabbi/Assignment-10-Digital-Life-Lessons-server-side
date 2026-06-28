@@ -85,6 +85,7 @@ async function run() {
         const {
           search,
           category,
+          sortBy,
           emotionalTone,
           page = 1,
           limit = 8,
@@ -111,6 +112,14 @@ async function run() {
           query.emotionalTone = emotionalTone;
         }
 
+        // sorting logic add
+        let sortQuery = { createdAt: -1 }; // Default: Newest
+        if (sortBy === 'mostSaved') {
+          sortQuery = { favoritesCount: -1 };
+        } else if (sortBy === 'newest') {
+          sortQuery = { createdAt: -1 };
+        }
+
         // pagination
         const pageNumber = parseInt(page);
         const limitNumber = parseInt(limit);
@@ -120,7 +129,7 @@ async function run() {
         const totalLessons = await lessonsCollection.countDocuments(query);
         const lessons = await lessonsCollection
           .find(query)
-          .sort({ createdAt: -1 }) // সবসময় লেটেস্ট আগে
+          .sort(sortQuery)
           .skip(skip)
           .limit(limitNumber)
           .toArray();
@@ -262,24 +271,19 @@ async function run() {
     );
 
     // Get lessons created by a specific user
-    app.get(
-      '/lessons/user/:userId',
-      verifyToken,
-      verifyUser,
-      async (req, res) => {
-        try {
-          const { userId } = req.params;
-          const lessons = await lessonsCollection
-            .find({ 'author.userId': userId })
-            .sort({ createdAt: -1 })
-            .toArray();
+    app.get('/lessons/user/:userId', verifyToken, async (req, res) => {
+      try {
+        const { userId } = req.params;
+        const lessons = await lessonsCollection
+          .find({ 'author.userId': userId })
+          .sort({ createdAt: -1 })
+          .toArray();
 
-          res.json(lessons); // Directly sending the DB data
-        } catch (error) {
-          res.status(500).json({ error: error.message });
-        }
-      },
-    );
+        res.json(lessons); // Directly sending the DB data
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
+    });
 
     // post lesson route
     app.post('/lessons', verifyToken, async (req, res) => {
@@ -851,36 +855,32 @@ async function run() {
     /**
      * Route: PATCH /users/plan-update route by user email
      */
-    app.patch(
-      '/users/plan-update',
-      verifyToken,
-      async (req, res) => {
-        try {
-          const { email } = req.body;
-          console.log(email, "customer email")
-          if (!email)
-            return res.status(400).send({ message: 'Email is required' });
+    app.patch('/users/plan-update', verifyToken, async (req, res) => {
+      try {
+        const { email } = req.body;
+        console.log(email, 'customer email');
+        if (!email)
+          return res.status(400).send({ message: 'Email is required' });
 
-          const result = await usersCollection.updateOne(
-            { email: email },
-            { $set: { plan: 'premium' } },
-          );
+        const result = await usersCollection.updateOne(
+          { email: email },
+          { $set: { plan: 'premium' } },
+        );
 
-          if (result.modifiedCount > 0) {
-            res.send({ success: true, message: 'Plan upgraded to premium' });
-          } else {
-            res.status(404).send({
-              success: false,
-              message: 'User not found or already premium',
-            });
-          }
-        } catch (error) {
-          res
-            .status(500)
-            .send({ message: 'Upgrade failed', error: error.message });
+        if (result.modifiedCount > 0) {
+          res.send({ success: true, message: 'Plan upgraded to premium' });
+        } else {
+          res.status(404).send({
+            success: false,
+            message: 'User not found or already premium',
+          });
         }
-      },
-    );
+      } catch (error) {
+        res
+          .status(500)
+          .send({ message: 'Upgrade failed', error: error.message });
+      }
+    });
 
     // 1. Route: POST /lessons/:id/comments
     // Purpose: Save a new comment/reflection for a specific lesson
@@ -1054,6 +1054,55 @@ async function run() {
         res.json(result);
       } catch (error) {
         res.status(500).json({ error: error.message });
+      }
+    });
+
+    // User/Admin: Update Profile (Name & Image)
+    app.patch('/profile/update/:id', verifyToken, async (req, res) => {
+      try {
+        const id = req.params.id;
+        const { name, image } = req.body;
+        const authenticatedUser = req.user;
+
+        // Security: Only the owner of the account or an admin can update the profile
+        if (
+          authenticatedUser._id.toString() !== id &&
+          authenticatedUser.role !== 'admin'
+        ) {
+          return res.status(403).send({
+            success: false,
+            message: 'Forbidden: You can only update your own profile.',
+          });
+        }
+
+        const filter = { _id: new ObjectId(id) };
+        const updateDoc = {
+          $set: {
+            name: name,
+            image: image,
+            photoURL: image, // Better Auth often uses photoURL
+          },
+        };
+
+        const result = await usersCollection.updateOne(filter, updateDoc);
+
+        if (result.modifiedCount > 0) {
+          res.status(200).send({
+            success: true,
+            message: 'Profile updated successfully',
+          });
+        } else {
+          res.status(404).send({
+            success: false,
+            message: 'No changes made or user not found',
+          });
+        }
+      } catch (error) {
+        console.error('Update Profile Error:', error);
+        res.status(500).send({
+          success: false,
+          message: 'Internal server error',
+        });
       }
     });
 
