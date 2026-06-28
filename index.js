@@ -794,26 +794,14 @@ async function run() {
       async (req, res) => {
         try {
           const id = req.params.id;
-
-          // 1. Delete lesson from main collection
-          const lessonResult = await lessonsCollection.deleteOne({
-            _id: new ObjectId(id),
-          });
-
-          // 2. Clean up associated flags/reports
-          const reportsResult = await lessonReportCollection.deleteMany({
-            lessonId: id,
-          });
-
-          // 3. Clean up user favorites (Requirement 2: No orphans)
-          const favoritesResult = await favoritesCollection.deleteMany({
-            lessonId: id,
-          });
-
-          // 4. Clean up lesson comments (Requirement 2: No orphans)
-          const commentsResult = await commentsCollection.deleteMany({
-            lessonId: id,
-          });
+          // array akare dawa hoise jeno delete hote deri na hoy er ager bar ekta ekta kore koray somoy nito beshi
+          const [lessonResult, reportsResult, favoritesResult, commentsResult] =
+            await Promise.all([
+              lessonsCollection.deleteOne({ _id: new ObjectId(id) }),
+              lessonReportCollection.deleteMany({ lessonId: id }),
+              favoritesCollection.deleteMany({ lessonId: id }),
+              commentsCollection.deleteMany({ lessonId: id }),
+            ]);
 
           res.send({
             success: true,
