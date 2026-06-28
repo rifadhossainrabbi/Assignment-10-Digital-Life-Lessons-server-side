@@ -150,17 +150,77 @@ async function run() {
     });
 
     // --- Admin: Get ALL lessons (Public + Private) with Reports + Stats ---
+    // app.get(
+    //   '/admin/all-lessons',
+    //   verifyToken,
+    //   verifyAdmin,
+    //   async (req, res) => {
+    //     try {
+    //       const lessons = await lessonsCollection
+    //         .aggregate([
+    //           {
+    //             // ObjectId k string kora hoyase
+    //             // karon report collection a lesson id string a ase
+    //             $addFields: {
+    //               lessonIdStr: { $toString: '$_id' },
+    //             },
+    //           },
+    //           {
+    //             // JOIN kora (lessons + lessons_reports)
+    //             $lookup: {
+    //               from: 'lessons_reports', //kon colection theke data anbe
+    //               localField: 'lessonIdStr', // lessons collection string id
+    //               foreignField: 'lessonId', // reports collection id
+    //               as: 'reports', // sob report joma hobe
+    //             },
+    //           },
+    //           {
+    //             // sorting notun gulo age
+    //             $sort: { createdAt: -1 },
+    //           },
+    //           {
+    //             // clean up barti field baad
+    //             $project: { lessonIdStr: 0 },
+    //           },
+    //         ])
+    //         .toArray();
+
+    //       // ektar moddhe sob data
+    //       const stats = {
+    //         total: lessons.length,
+    //         publicCount: 0,
+    //         privateCount: 0,
+    //         featuredCount: 0,
+    //         flaggedCount: 0,
+    //       };
+
+    //       lessons.forEach(l => {
+    //         if (l.visibility === 'Public') stats.publicCount++;
+    //         else if (l.visibility === 'Private') stats.privateCount++;
+
+    //         if (l.isFeatured) stats.featuredCount++;
+
+    //         if (l.reports && l.reports.length > 0) stats.flaggedCount++;
+    //       });
+
+    //       res.send({ lessons, stats });
+    //     } catch (error) {
+    //       console.error('Admin aggregation error:', error);
+    //       res.status(500).send({ message: 'System synchronization failed' });
+    //     }
+    //   },
+    // );
+
     app.get(
       '/admin/all-lessons',
       verifyToken,
       verifyAdmin,
       async (req, res) => {
         try {
-          const lessons = await lessonsCollection
+          const result = await lessonsCollection
             .aggregate([
               {
-                // ObjectId k string kora hoyase
-                // karon report collection a lesson id string a ase
+                // ObjectId  string kora
                 $addFields: {
                   lessonIdStr: { $toString: '$_id' },
                 },
@@ -168,40 +228,61 @@ async function run() {
               {
                 // JOIN kora (lessons + lessons_reports)
                 $lookup: {
-                  from: 'lessons_reports', //kon colection theke data anbe
-                  localField: 'lessonIdStr', // lessons collection string id
-                  foreignField: 'lessonId', // reports collection id
-                  as: 'reports', // sob report joma hobe
+                  from: 'lessons_reports',
+                  localField: 'lessonIdStr',
+                  foreignField: 'lessonId',
+                  as: 'reports',
                 },
               },
               {
-                // sorting notun gulo age
-                $sort: { createdAt: -1 },
-              },
-              {
-                // clean up barti field baad
-                $project: { lessonIdStr: 0 },
+                // $facet use kore duita kaj eksathe kora
+                $facet: {
+                  // lessons list
+                  lessons: [
+                    { $sort: { createdAt: -1 } },
+                    { $project: { lessonIdStr: 0 } },
+                  ],
+                  // statas calculate kora
+                  stats: [
+                    {
+                      $group: {
+                        _id: null,
+                        total: { $sum: 1 },
+                        publicCount: {
+                          $sum: {
+                            $cond: [{ $eq: ['$visibility', 'Public'] }, 1, 0],
+                          },
+                        },
+                        privateCount: {
+                          $sum: {
+                            $cond: [{ $eq: ['$visibility', 'Private'] }, 1, 0],
+                          },
+                        },
+                        featuredCount: {
+                          $sum: { $cond: ['$isFeatured', 1, 0] },
+                        },
+                        flaggedCount: {
+                          $sum: {
+                            $cond: [{ $gt: [{ $size: '$reports' }, 0] }, 1, 0],
+                          },
+                        },
+                      },
+                    },
+                  ],
+                },
               },
             ])
             .toArray();
 
-          // ektar moddhe sob data 
-          const stats = {
-            total: lessons.length,
+          // aggregate result theke data format kora
+          const lessons = result[0].lessons;
+          const stats = result[0].stats[0] || {
+            total: 0,
             publicCount: 0,
             privateCount: 0,
             featuredCount: 0,
             flaggedCount: 0,
           };
-
-          lessons.forEach(l => {
-            if (l.visibility === 'Public') stats.publicCount++;
-            else if (l.visibility === 'Private') stats.privateCount++;
-
-            if (l.isFeatured) stats.featuredCount++;
-
-            if (l.reports && l.reports.length > 0) stats.flaggedCount++;
-          });
 
           res.send({ lessons, stats });
         } catch (error) {
@@ -210,6 +291,8 @@ async function run() {
         }
       },
     );
+
+
     // --- Admin: Update Featured/Reviewed status ---
     app.patch(
       '/admin/lessons/status/:id',
