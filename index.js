@@ -292,7 +292,6 @@ async function run() {
       },
     );
 
-
     // --- Admin: Update Featured/Reviewed status ---
     app.patch(
       '/admin/lessons/status/:id',
@@ -621,26 +620,38 @@ async function run() {
      */
     app.get('/admin/users', verifyToken, verifyAdmin, async (req, res) => {
       try {
-        const users = await usersCollection.find().toArray();
-
-        // Mapping each user to count their specific lessons from the lessons collection
-        const usersWithStats = await Promise.all(
-          users.map(async user => {
-            const count = await lessonsCollection.countDocuments({
-              'author.userId': user._id.toString(),
-            });
-            return {
-              ...user,
-              totalLessons: count,
-            };
-          }),
-        );
+        const usersWithStats = await usersCollection
+          .aggregate([
+            {
+              // ObjectId k string kora hoise 
+              $addFields: { userIdStr: { $toString: '$_id' } },
+            },
+            {
+              // Lessons collection er sathe join
+              $lookup: {
+                from: 'lessons',
+                localField: 'userIdStr',
+                foreignField: 'author.userId',
+                as: 'userLessons',
+              },
+            },
+            {
+              // data
+              $project: {
+                name: 1,
+                email: 1,
+                role: 1,
+                isPremium: 1,
+                image: 1,
+                totalLessons: { $size: '$userLessons' },
+              },
+            },
+          ])
+          .toArray();
 
         res.send(usersWithStats);
       } catch (error) {
-        res
-          .status(500)
-          .send({ message: 'Error fetching users', error: error.message });
+        res.status(500).send({ message: 'Error fetching users' });
       }
     });
 
