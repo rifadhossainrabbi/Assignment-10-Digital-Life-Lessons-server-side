@@ -553,42 +553,37 @@ async function run() {
     app.get('/favorites/:userId', verifyToken, async (req, res) => {
       try {
         const { userId } = req.params;
-        const authenticatedUserId = req.user._id.toString();
+        if (userId !== req.user._id.toString())
+          return res.status(403).send('Forbidden');
 
-        // owner check
-        if (userId !== authenticatedUserId) {
-          return res.status(403).json({
-            success: false,
-            message:
-              "Forbidden: You cannot access someone else's favorite list.",
-          });
-        }
-
-        const { category, emotionalTone } = req.query;
-
-        // find favorite lesson by userId
-        const userFavs = await favoritesCollection.find({ userId }).toArray();
-        if (!userFavs.length) return res.json([]);
-
-        const lessonIds = userFavs.map(fav => new ObjectId(fav.lessonId));
-
-        // filter
-        let filterQuery = { _id: { $in: lessonIds } };
-        if (category) filterQuery.category = category;
-        if (emotionalTone) filterQuery.emotionalTone = emotionalTone;
-
-        // lesson collection theke data find
-        const savedLessons = await lessonsCollection
-          .find(filterQuery)
+        const savedLessons = await favoritesCollection
+          .aggregate([
+            { $match: { userId: userId } },
+            {
+              // favorites collection er lessonId (string) k ObjectId kora hoyase
+              $addFields: { lessonObjectId: { $toObjectId: '$lessonId' } },
+            },
+            {
+              // lessons collection er sathe add
+              $lookup: {
+                from: 'lessons',
+                localField: 'lessonObjectId',
+                foreignField: '_id',
+                as: 'lessonDetails',
+              },
+            },
+            { $unwind: '$lessonDetails' },
+            { $replaceRoot: { newRoot: '$lessonDetails' } }, // all lesson data
+            {
+              $addFields: {
+                likesCount: { $size: { $ifNull: ['$likes', []] } },
+              },
+            },
+            { $project: { likes: 0 } },
+          ])
           .toArray();
 
-        // likeCounts add
-        const result = savedLessons.map(lesson => ({
-          ...lesson,
-          likesCount: lesson.likes?.length || 0,
-        }));
-
-        res.json(result);
+        res.json(savedLessons);
       } catch (error) {
         res.status(500).json({ error: error.message });
       }
@@ -1076,7 +1071,7 @@ async function run() {
               $project: {
                 favoriteStatus: 0,
                 authorLessons: 0,
-                likes: 0, 
+                likes: 0,
               },
             },
           ])
@@ -1139,23 +1134,41 @@ async function run() {
 
     // --- Backend: Get Most Saved Lessons with check for current user ---
     app.get('/most-saved-lessons', async (req, res) => {
-      const userId = req.query.userId;
+      const userId = req.query.userId || '';
+
       const topLessons = await lessonsCollection
-        .find({ visibility: 'Public' })
-        .sort({ favoritesCount: -1 })
-        .limit(4)
+        .aggregate([
+          { $match: { visibility: 'Public' } },
+          { $sort: { favoritesCount: -1 } },
+          { $limit: 4 },
+          {
+            $lookup: {
+              from: 'favorites',
+              let: { lId: { $toString: '$_id' } },
+              pipeline: [
+                {
+                  $match: {
+                    $expr: {
+                      $and: [
+                        { $eq: ['$lessonId', '$$lId'] },
+                        { $eq: ['$userId', userId] },
+                      ],
+                    },
+                  },
+                },
+              ],
+              as: 'savedStatus',
+            },
+          },
+          {
+            $addFields: {
+              hasFavorited: { $gt: [{ $size: '$savedStatus' }, 0] },
+              likesCount: { $size: { $ifNull: ['$likes', []] } },
+            },
+          },
+          { $project: { savedStatus: 0, likes: 0 } },
+        ])
         .toArray();
-
-      if (userId) {
-        const userFavs = await favoritesCollection.find({ userId }).toArray();
-        const favIds = userFavs.map(f => f.lessonId);
-
-        const result = topLessons.map(lesson => ({
-          ...lesson,
-          hasFavorited: favIds.includes(lesson._id.toString()),
-        }));
-        return res.send(result);
-      }
 
       res.send(topLessons);
     });
@@ -1164,7 +1177,6 @@ async function run() {
     app.get('/lessons/:id/similar', async (req, res) => {
       try {
         const { id } = req.params;
-
         const currentLesson = await lessonsCollection.findOne({
           _id: new ObjectId(id),
         });
@@ -1172,24 +1184,29 @@ async function run() {
           return res.status(404).json({ message: 'Not found' });
 
         const similarLessons = await lessonsCollection
-          .find({
-            _id: { $ne: new ObjectId(id) },
-            visibility: 'Public',
-            $or: [
-              { category: currentLesson.category },
-              { emotionalTone: currentLesson.emotionalTone },
-            ],
-          })
-          .sort({ createdAt: -1 })
-          .limit(6)
+          .aggregate([
+            {
+              $match: {
+                _id: { $ne: new ObjectId(id) },
+                visibility: 'Public',
+                $or: [
+                  { category: currentLesson.category },
+                  { emotionalTone: currentLesson.emotionalTone },
+                ],
+              },
+            },
+            { $sort: { createdAt: -1 } },
+            { $limit: 6 },
+            {
+              $addFields: {
+                likesCount: { $size: { $ifNull: ['$likes', []] } },
+              },
+            },
+            { $project: { likes: 0 } },
+          ])
           .toArray();
 
-        const result = similarLessons.map(l => ({
-          ...l,
-          likesCount: l.likes?.length || 0,
-        }));
-
-        res.json(result);
+        res.json(similarLessons);
       } catch (error) {
         res.status(500).json({ error: error.message });
       }
