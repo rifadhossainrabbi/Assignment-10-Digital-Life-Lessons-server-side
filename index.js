@@ -89,62 +89,76 @@ async function run() {
           emotionalTone,
           page = 1,
           limit = 8,
+          userId,
         } = req.query;
 
-        // only public lesson send
-        let query = { visibility: 'Public' };
+        // filter query
+        let matchQuery = { visibility: 'Public' };
 
-        // search filter
         if (search) {
-          query.$or = [
+          matchQuery.$or = [
             { title: { $regex: search, $options: 'i' } },
             { description: { $regex: search, $options: 'i' } },
           ];
         }
 
-        // category filter
-        if (category && category !== 'All') {
-          query.category = category;
-        }
+        if (category && category !== 'All') matchQuery.category = category;
+        if (emotionalTone && emotionalTone !== 'All')
+          matchQuery.emotionalTone = emotionalTone;
 
-        // emotional tone filter
-        if (emotionalTone && emotionalTone !== 'All') {
-          query.emotionalTone = emotionalTone;
-        }
+        //  sorting query
+        let sortQuery = { createdAt: -1 };
+        if (sortBy === 'mostSaved') sortQuery = { favoritesCount: -1 };
+        else if (sortBy === 'newest') sortQuery = { createdAt: -1 };
 
-        // sorting logic add
-        let sortQuery = { createdAt: -1 }; // Default: Newest
-        if (sortBy === 'mostSaved') {
-          sortQuery = { favoritesCount: -1 };
-        } else if (sortBy === 'newest') {
-          sortQuery = { createdAt: -1 };
-        }
-
-        // pagination
         const pageNumber = parseInt(page);
         const limitNumber = parseInt(limit);
         const skip = (pageNumber - 1) * limitNumber;
 
-        // all lesson
-        const totalLessons = await lessonsCollection.countDocuments(query);
-        const lessons = await lessonsCollection
-          .find(query)
-          .sort(sortQuery)
-          .skip(skip)
-          .limit(limitNumber)
+        // ৩. aggragation pipeline
+        const result = await lessonsCollection
+          .aggregate([
+            { $match: matchQuery },
+            {
+              $facet: {
+                // lesson count
+                metadata: [{ $count: 'total' }],
+                // sorting pagination and data formating
+                data: [
+                  { $sort: sortQuery },
+                  { $skip: skip },
+                  { $limit: limitNumber },
+                  {
+                    $addFields: {
+                      likesCount: { $size: { $ifNull: ['$likes', []] } },
+                      hasLiked: userId
+                        ? { $in: [userId, { $ifNull: ['$likes', []] }] }
+                        : false,
+                    },
+                  },
+                  {
+                    $project: {
+                      likes: 0,
+                    },
+                  },
+                ],
+              },
+            },
+          ])
           .toArray();
 
-        // send result
+        // রেজাল্ট ফরম্যাট করা
+        const totalLessons = result[0].metadata[0]?.total || 0;
+        const lessons = result[0].data;
+
         res.send({
-          lessons: lessons.map(l => ({
-            ...l,
-            likesCount: l.likes?.length || 0,
-          })),
+          lessons,
           totalLessons,
           totalPages: Math.ceil(totalLessons / limitNumber),
           currentPage: pageNumber,
         });
       } catch (error) {
+        console.error('Fetch lessons error:', error);
         res.status(500).send({ message: 'Error fetching lessons' });
       }
     });
@@ -623,7 +637,7 @@ async function run() {
         const usersWithStats = await usersCollection
           .aggregate([
             {
-              // ObjectId k string kora hoise 
+              // ObjectId k string kora hoise
               $addFields: { userIdStr: { $toString: '$_id' } },
             },
             {
@@ -999,15 +1013,83 @@ async function run() {
         const { id } = req.params;
         const userId = req.user._id.toString();
 
-        // find main lesson
-        const lesson = await lessonsCollection.findOne({
-          _id: new ObjectId(id),
-        });
+        const lessonData = await lessonsCollection
+          .aggregate([
+            // lesson find by id
+            { $match: { _id: new ObjectId(id) } },
 
-        if (!lesson)
+            // comments collection add
+            {
+              $lookup: {
+                from: 'comments',
+                let: { lid: { $toString: '$_id' } },
+                pipeline: [
+                  { $match: { $expr: { $eq: ['$lessonId', '$$lid'] } } },
+                  { $sort: { createdAt: -1 } },
+                ],
+                as: 'comments',
+              },
+            },
+
+            // favorite a ase ki na
+            {
+              $lookup: {
+                from: 'favorites',
+                let: { lid: { $toString: '$_id' } },
+                pipeline: [
+                  {
+                    $match: {
+                      $expr: {
+                        $and: [
+                          { $eq: ['$lessonId', '$$lid'] },
+                          { $eq: ['$userId', userId] },
+                        ],
+                      },
+                    },
+                  },
+                ],
+                as: 'favoriteStatus',
+              },
+            },
+
+            // auhtor er mot kot gulo lesson ase
+            {
+              $lookup: {
+                from: 'lessons',
+                localField: 'author.userId',
+                foreignField: 'author.userId',
+                as: 'authorLessons',
+              },
+            },
+
+            // data formating
+            {
+              $addFields: {
+                likesCount: { $size: { $ifNull: ['$likes', []] } },
+                hasLiked: { $in: [userId, { $ifNull: ['$likes', []] }] },
+                hasFavorited: { $gt: [{ $size: '$favoriteStatus' }, 0] },
+                'author.lessonsCount': { $size: '$authorLessons' },
+              },
+            },
+
+            {
+              $project: {
+                favoriteStatus: 0,
+                authorLessons: 0,
+                likes: 0, 
+              },
+            },
+          ])
+          .toArray();
+
+        // result check
+        if (!lessonData.length) {
           return res.status(404).json({ message: 'Lesson not found' });
+        }
 
-        // owner and admin can access
+        const lesson = lessonData[0];
+
+        // owner and admin check
         const isOwner = lesson.author?.userId === userId;
         const isAdmin = req.user.role === 'admin';
 
@@ -1015,41 +1097,10 @@ async function run() {
           return res.status(403).json({ message: 'This is a private lesson.' });
         }
 
-        // lesson, comment, favorite sob find kora ektar moddhe jeno code fast hoy
-        const [comments, authorLessonsCount, favoriteEntry] = await Promise.all(
-          [
-            commentsCollection
-              .find({ lessonId: id })
-              .sort({ createdAt: -1 })
-              .toArray(),
-            lessonsCollection.countDocuments({
-              'author.userId': lesson.author?.userId,
-            }),
-            favoritesCollection.findOne({ lessonId: id, userId: userId }),
-          ],
-        );
-
-        // like check
-        const hasLiked = lesson.likes?.includes(userId) || false;
-        const hasFavorited = !!favoriteEntry;
-
-        // sob data eksathe pathay dawa hocce
-        res.json({
-          ...lesson,
-          comments,
-          author: {
-            ...lesson.author,
-            lessonsCount: authorLessonsCount,
-          },
-          hasLiked,
-          hasFavorited,
-          likesCount: lesson.likes?.length || 0,
-        });
+        res.json(lesson);
       } catch (error) {
         console.error('Error fetching lesson details:', error);
-        res.status(500).json({
-          error: 'Internal server error while fetching lesson details',
-        });
+        res.status(500).json({ error: 'Internal server error' });
       }
     });
 
