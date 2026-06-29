@@ -386,7 +386,7 @@ async function run() {
             {
               $lookup: {
                 from: 'lessons',
-                let: { user_id_str: { $toString: '$_id' } }, 
+                let: { user_id_str: { $toString: '$_id' } },
                 pipeline: [
                   {
                     $match: {
@@ -407,8 +407,8 @@ async function run() {
                 photoURL: 1,
                 role: 1,
                 plan: 1,
-                lessons: '$userLessons', 
-                totalLessons: { $size: '$userLessons' }, 
+                lessons: '$userLessons',
+                totalLessons: { $size: '$userLessons' },
                 totalLikes: { $sum: '$userLessons.likesCount' },
               },
             },
@@ -419,12 +419,13 @@ async function run() {
           return res.status(404).json({ message: 'Author not found' });
         }
 
-        res.json(authorProfile[0]); 
+        res.json(authorProfile[0]);
       } catch (error) {
         console.error(error);
         res.status(500).json({ error: error.message });
       }
     });
+
     // post lesson route
     app.post('/lessons', verifyToken, async (req, res) => {
       const lesson = req.body;
