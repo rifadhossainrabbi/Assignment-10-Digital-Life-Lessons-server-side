@@ -515,48 +515,35 @@ async function run() {
     app.delete('/lessons/:id', verifyToken, async (req, res) => {
       try {
         const id = req.params.id;
-        const user = req.user;
+        const userId = req.user._id.toString();
 
-        if (!ObjectId.isValid(id)) {
-          return res.status(400).send({ message: 'Invalid ID' });
-        }
-
-        // find lesson
+        // ১. প্রথমে চেক করা এই লেসনটি ঐ ইউজারের কি না
         const lesson = await lessonsCollection.findOne({
           _id: new ObjectId(id),
         });
-
-        if (!lesson) {
+        if (!lesson)
           return res.status(404).send({ message: 'Lesson not found!' });
+
+        if (lesson.author?.userId !== userId && req.user.role !== 'admin') {
+          return res
+            .status(403)
+            .send({ message: 'Forbidden: Ownership required' });
         }
 
-        //  owner and admin check
-        const isOwner = lesson.author?.userId === user._id.toString();
-        const isAdmin = user.role === 'admin';
-
-        if (!isOwner && !isAdmin) {
-          // owner and admin na hole
-          return res.status(403).send({
-            success: false,
-            message: 'Forbidden: You can only delete your own lessons.',
-          });
-        }
-
-        await lessonsCollection.deleteOne({ _id: new ObjectId(id) });
-
-        // same lesosn er sob collection theke data delete
-        await lessonReportCollection.deleteMany({ lessonId: id });
-        await favoritesCollection.deleteMany({ lessonId: id });
-        await commentsCollection.deleteMany({ lessonId: id });
+        // ২. সব ডাটা একবারে মুছে ফেলা
+        await Promise.all([
+          lessonsCollection.deleteOne({ _id: new ObjectId(id) }),
+          lessonReportCollection.deleteMany({ lessonId: id }),
+          favoritesCollection.deleteMany({ lessonId: id }),
+          commentsCollection.deleteMany({ lessonId: id }),
+        ]);
 
         res.send({
           success: true,
-          message: isAdmin
-            ? 'Admin deleted the lesson and its metadata.'
-            : 'Your lesson has been deleted successfully.',
+          message: 'Your wisdom and its records have been erased.',
         });
       } catch (error) {
-        console.error('Delete Error:', error);
+        console.error('User Lesson Delete Error:', error);
         res
           .status(500)
           .send({ message: 'Internal server error during deletion' });
@@ -729,19 +716,69 @@ async function run() {
      * Route: DELETE /admin/users/:id
      * Delete user account permanently
      */
+    /**
+     * Route: DELETE /admin/users/:id
+     */
     app.delete(
       '/admin/users/:id',
       verifyToken,
       verifyAdmin,
       async (req, res) => {
         try {
-          const id = req.params.id;
-          const result = await usersCollection.deleteOne({
-            _id: new ObjectId(id),
+          const userId = req.params.id;
+
+          // user er id diya sob collection theke data khuja
+          const userLessons = await lessonsCollection
+            .find({ 'author.userId': userId })
+            .project({ _id: 1 })
+            .toArray();
+
+          const userLessonIds = userLessons.map(lesson =>
+            lesson._id.toString(),
+          );
+
+          const deleteOperations = [
+            // user account
+            usersCollection.deleteOne({ _id: new ObjectId(userId) }),
+
+            // lessons delete by userId
+            lessonsCollection.deleteMany({ 'author.userId': userId }),
+
+            // comments delete by userId
+            commentsCollection.deleteMany({ userId: userId }),
+
+            // favorite delete by userId
+            favoritesCollection.deleteMany({ userId: userId }),
+
+            //report delete by userId
+            lessonReportCollection.deleteMany({ reporterUserId: userId }),
+          ];
+
+          // user er lesson, report, faborite soho sob delete
+          if (userLessonIds.length > 0) {
+            deleteOperations.push(
+              commentsCollection.deleteMany({
+                lessonId: { $in: userLessonIds },
+              }),
+              favoritesCollection.deleteMany({
+                lessonId: { $in: userLessonIds },
+              }),
+              lessonReportCollection.deleteMany({
+                lessonId: { $in: userLessonIds },
+              }),
+            );
+          }
+
+          const results = await Promise.all(deleteOperations);
+
+          res.send({
+            success: true,
+            message: 'User and all associated data purged successfully',
+            details: results.map(res => res.deletedCount),
           });
-          res.send(result);
         } catch (error) {
-          res.status(500).send({ message: 'Failed to delete user' });
+          console.error('Purge User Error:', error);
+          res.status(500).send({ message: 'Failed to fully delete user data' });
         }
       },
     );
