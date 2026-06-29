@@ -372,20 +372,59 @@ async function run() {
     );
 
     // Get lessons created by a specific user
-    app.get('/lessons/user/:userId', verifyToken, async (req, res) => {
+    app.get('/author-profile/:userId', verifyToken, async (req, res) => {
       try {
         const { userId } = req.params;
-        const lessons = await lessonsCollection
-          .find({ 'author.userId': userId })
-          .sort({ createdAt: -1 })
+
+        const authorProfile = await usersCollection
+          .aggregate([
+            // user collection theke user er id diya data khujbe
+            {
+              $match: { _id: new ObjectId(userId) },
+            },
+            // lesson collection theke oi id diya lesson khujbe
+            {
+              $lookup: {
+                from: 'lessons',
+                let: { user_id_str: { $toString: '$_id' } }, 
+                pipeline: [
+                  {
+                    $match: {
+                      $expr: { $eq: ['$author.userId', '$$user_id_str'] },
+                    },
+                  },
+                  { $sort: { createdAt: -1 } },
+                ],
+                as: 'userLessons',
+              },
+            },
+            // data formating
+            {
+              $project: {
+                name: 1,
+                email: 1,
+                image: 1,
+                photoURL: 1,
+                role: 1,
+                plan: 1,
+                lessons: '$userLessons', 
+                totalLessons: { $size: '$userLessons' }, 
+                totalLikes: { $sum: '$userLessons.likesCount' },
+              },
+            },
+          ])
           .toArray();
 
-        res.json(lessons); // Directly sending the DB data
+        if (!authorProfile.length) {
+          return res.status(404).json({ message: 'Author not found' });
+        }
+
+        res.json(authorProfile[0]); 
       } catch (error) {
+        console.error(error);
         res.status(500).json({ error: error.message });
       }
     });
-
     // post lesson route
     app.post('/lessons', verifyToken, async (req, res) => {
       const lesson = req.body;
